@@ -1,0 +1,4 @@
+subdirs = [
+   "cryptfs_hw",
+   "kernel-headers",
+]
