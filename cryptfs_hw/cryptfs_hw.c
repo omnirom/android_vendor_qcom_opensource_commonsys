@@ -52,8 +52,8 @@
  */
 #define ERR_MAX_PASSWORD_ATTEMPTS			-10
 #define MAX_PASSWORD_LEN				32
-#define QCOM_ICE_STORAGE_UFS				1
-#define QCOM_ICE_STORAGE_SDCC				2
+#define QTI_ICE_STORAGE_UFS				1
+#define QTI_ICE_STORAGE_SDCC				2
 #define SET_HW_DISK_ENC_KEY				1
 #define UPDATE_HW_DISK_ENC_KEY				2
 
@@ -67,6 +67,8 @@
 #define CRYPTFS_HW_CREATE_KEY_FAILED			-7
 
 #define CRYPTFS_HW_ALGO_MODE_AES_XTS 			0x3
+
+#define METADATA_PARTITION_NAME "/dev/block/bootdevice/by-name/metadata"
 
 enum cryptfs_hw_key_management_usage_type {
 	CRYPTFS_HW_KM_USAGE_DISK_ENCRYPTION		= 0x01,
@@ -261,10 +263,10 @@ static int map_usage(int usage)
 {
     int storage_type = is_ice_enabled();
     if (usage == CRYPTFS_HW_KM_USAGE_DISK_ENCRYPTION) {
-        if (storage_type == QCOM_ICE_STORAGE_UFS) {
+        if (storage_type == QTI_ICE_STORAGE_UFS) {
             return CRYPTFS_HW_KM_USAGE_UFS_ICE_DISK_ENCRYPTION;
         }
-        else if (storage_type == QCOM_ICE_STORAGE_SDCC) {
+        else if (storage_type == QTI_ICE_STORAGE_SDCC) {
             return CRYPTFS_HW_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION;
         }
     }
@@ -363,15 +365,27 @@ int is_ice_enabled(void)
   int storage_type = 0;
   int fd;
 
+  /*
+   * Since HW FDE is a compile time flag (due to QSSI requirements),
+   * this API conflicts with Metadata encryption even when ICE is
+   * enabled, as it encrypts the whole disk instead. Adding this
+   * workaround to return 0 if metadata partition is present.
+   */
+
+  if (access(METADATA_PARTITION_NAME, F_OK) == 0) {
+    SLOGI("Metadata partition, returning false");
+    return 0;
+  }
+
   if (property_get("ro.boot.bootdevice", prop_storage, "")) {
     if (strstr(prop_storage, "ufs")) {
       /* All UFS based devices has ICE in it. So we dont need
        * to check if corresponding device exists or not
        */
-      storage_type = QCOM_ICE_STORAGE_UFS;
+      storage_type = QTI_ICE_STORAGE_UFS;
     } else if (strstr(prop_storage, "sdhc")) {
       if (access("/dev/icesdcc", F_OK) != -1)
-        storage_type = QCOM_ICE_STORAGE_SDCC;
+        storage_type = QTI_ICE_STORAGE_SDCC;
     }
   }
   return storage_type;
@@ -397,21 +411,8 @@ static int get_keymaster_version()
 
 int should_use_keymaster()
 {
-    /* HW FDE key would be tied to keymaster only if:
-     * New Keymaster is available
-     * keymaster partition exists on the device
+    /*
+     * HW FDE key should be tied to keymaster
      */
-    int rc = 0;
-    if (get_keymaster_version() != KEYMASTER_MODULE_API_VERSION_1_0) {
-        SLOGI("Keymaster version is not 1.0");
-        return rc;
-    }
-
     return 1;
 }
-
-unsigned int is_hw_fde_enabled(void)
-{
-    return 1;
-}
-
