@@ -60,6 +60,7 @@
 
 static unsigned int cpu_id[] = {
 	239, /* MSM8939 SOC ID */
+	292, /* MSM8998 SOC ID */
 };
 
 #define CRYPTFS_HW_KMS_CLEAR_KEY			0
