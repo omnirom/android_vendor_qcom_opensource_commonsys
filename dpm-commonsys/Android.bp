@@ -4,6 +4,7 @@ java_library {
 
     no_framework_libs: true,
     installable: true,
+    owner: "qcom",
     name: "tcmiface",
     srcs: ["**/*.java"],
 }
