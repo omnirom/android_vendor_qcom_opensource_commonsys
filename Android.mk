@@ -13,3 +13,4 @@ include $(TMP_LOCAL_PATH)/hidtestapp/Android.mk
 include $(TMP_LOCAL_PATH)/bttestapp/Android.mk
 endif #TARGET_USE_QTI_BT_STACK
 
+include $(TMP_LOCAL_PATH)/bluetooth/Android.mk
