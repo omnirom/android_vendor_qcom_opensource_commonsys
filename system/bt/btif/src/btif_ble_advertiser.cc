@@ -22,6 +22,7 @@
 #include <hardware/bt_gatt.h>
 
 #include <base/bind.h>
+#include <base/callback.h>
 #include <vector>
 
 #include "ble_advertiser.h"
@@ -40,7 +41,7 @@ class OwnedArrayWrapper {
   explicit OwnedArrayWrapper(T* o) : ptr_(o) {}
   ~OwnedArrayWrapper() { delete[] ptr_; }
   T* get() const { return ptr_; }
-  OwnedArrayWrapper(OwnedArrayWrapper&& other) {
+  OwnedArrayWrapper(OwnedArrayWrapper&& other) noexcept {
     ptr_ = other.ptr_;
     other.ptr_ = NULL;
   }

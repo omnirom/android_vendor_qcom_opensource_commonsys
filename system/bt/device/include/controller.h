@@ -27,6 +27,7 @@
 #include "hci_packet_parser.h"
 #include "osi/include/log.h"
 #include "utils/include/bt_utils.h"
+#include <btcommon_interface_defs.h>
 
 static const char CONTROLLER_MODULE[] = "controller_module";
 
@@ -89,9 +90,20 @@ typedef struct controller_t {
   bool (*supports_ble_offload_features)(void);
   uint8_t (*get_le_all_initiating_phys)(void);
   uint8_t* (*get_scrambling_supported_freqs)(uint8_t* number_of_freqs);
-  const bt_device_features_t* (*get_add_on_features)(uint8_t *add_on_features_len);
+  const bt_device_soc_add_on_features_t* (*get_soc_add_on_features)(uint8_t *add_on_features_len);
   uint16_t (*get_product_id)(void);
   uint16_t (*get_response_version)(void);
+  const bt_device_host_add_on_features_t*
+      (*get_host_add_on_features)(uint8_t *add_on_features_len);
+  bool (*supports_read_simple_pairing_options)(void);
+  bool (*performs_remote_public_key_validation)(void);
+  bt_soc_type_t (*get_soc_type)();
+  const char* (*get_a2dp_offload_cap)();
+  bool (*supports_spilt_a2dp)();
+  bool (*supports_aac_frame_ctl)();
+  bool (*supports_wipower)();
+  bool (*is_multicast_enabled)();
+  bool (*supports_twsp_remote_state)();
 } controller_t;
 
 const controller_t* controller_get_interface();
@@ -100,3 +112,5 @@ const controller_t* controller_get_test_interface(
     const hci_t* hci_interface,
     const hci_packet_factory_t* packet_factory_interface,
     const hci_packet_parser_t* packet_parser_interface);
+
+bool is_soc_lpa_enh_pwr_enabled();

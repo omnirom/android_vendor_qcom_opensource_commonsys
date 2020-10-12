@@ -46,6 +46,9 @@
 #include "osi/include/config.h"
 #include <vendor/qti/hardware/btconfigstore/1.0/IBTConfigStore.h>
 #include <vendor/qti/hardware/btconfigstore/1.0/types.h>
+#include <vendor/qti/hardware/btconfigstore/2.0/IBTConfigStore.h>
+#include <vendor/qti/hardware/btconfigstore/2.0/types.h>
+
 
 #include <hwbinder/ProcessState.h>
 #include <string.h>
@@ -55,25 +58,37 @@
 /* max platform record must be equal to the predefined max num
    of platform in bt_configstore.conf */
 #define MAX_PLATFORM_PROP_RECORD 12
-#define BT_CONFIG_STORE_PATH "/etc/bluetooth/bt_configstore.conf"
+#define BT_CONFIG_STORE_PATH "/system_ext/etc/bluetooth/bt_configstore.conf"
 
 using android::hardware::IPCThreadState;
-using ::vendor::qti::hardware::btconfigstore::V1_0::IBTConfigStore;
-using ::vendor::qti::hardware::btconfigstore::V1_0::VendorProperty;
+
 using ::vendor::qti::hardware::btconfigstore::V1_0::AddOnFeaturesList;
-using ::vendor::qti::hardware::btconfigstore::V1_0::Result;
+using ::vendor::qti::hardware::btconfigstore::V2_0::HostAddOnFeatures;
+using ::vendor::qti::hardware::btconfigstore::V2_0::ControllerAddOnFeatures;
+
+using Result_V1_0 = ::vendor::qti::hardware::btconfigstore::V1_0::Result;
+using Result_V2_0 = ::vendor::qti::hardware::btconfigstore::V2_0::Result;
+using VendorProperty_V1_0 = ::vendor::qti::hardware::btconfigstore::V1_0::VendorProperty;
+using VendorProperty_V2_0 = ::vendor::qti::hardware::btconfigstore::V2_0::VendorProperty;
+using IBTConfigStore_V1_0 = ::vendor::qti::hardware::btconfigstore::V1_0::IBTConfigStore;
+using IBTConfigStore_V2_0 = ::vendor::qti::hardware::btconfigstore::V2_0::IBTConfigStore;
+
+
 using ::android::hardware::ProcessState;
 using ::android::hardware::Return;
 using ::android::hardware::Void;
 using ::android::hardware::hidl_vec;
 using std::vector;
 
-android::sp<IBTConfigStore> btConfigStore=nullptr;
+android::sp<IBTConfigStore_V1_0> btConfigStoreHal_1_0 = nullptr;
+android::sp<IBTConfigStore_V2_0> btConfigStoreHal_2_0 = nullptr;
 
 char gPlatformName[16] = {'\0'};
 int gPlatformNameSize = 0;
 
-static bool getAddOnFeatures(add_on_features_list_t *features_list);
+static bool getControllerAddOnFeatures(controller_add_on_features_list_t *features_list);
+static bool getHostAddOnFeatures(host_add_on_features_list_t *features_list);
+
 static bool getVendorProperties(uint32_t type,
                                    std::vector<vendor_property_t> &vPropList);
 static bool setVendorProperty(uint32_t type, const char * value);
@@ -82,46 +97,18 @@ static bool btConfigStoreLoadProperties(uint32_t vPropType,
 static bt_soc_type_t convertSocNameToBTSocType(const char * name);
 static const char * convertPropTypeToStringFormat(uint32_t propType);
 
+const bool IsLazyHalSupported(property_get_bool("ro.vendor.bt.enablelazyhal", false));
+
 EXPORT_SYMBOL bt_configstore_interface_t btConfigStoreInterface = {
     sizeof(btConfigStoreInterface),
     getVendorProperties,
-    getAddOnFeatures,
+    getControllerAddOnFeatures,
+    getHostAddOnFeatures,
     setVendorProperty,
     convertSocNameToBTSocType,
     convertPropTypeToStringFormat,
 };
 
-#ifdef ARCH_ARM_32
-bool IsLazyHalSupported()
-{
-  static bool isPropertyRead = false;
-  static bool isLazyHalEnabled = false;
-
-  /* MSM8937 target supports both lazy and non lazy hal
-   * which is differentiated by a property.
-   * isLazyHalPropStatus holds the property status.
-   */
-  ALOGD("%s isPropertyRead: %d isLazyHalEnabled: %d", __func__, isPropertyRead,
-         isLazyHalEnabled);
-
-  if (!isPropertyRead) {
-    char device[PROPERTY_VALUE_MAX]= {'\0'};
-    int len = property_get("ro.board.platform", device, "");
-    if (len) {
-      isPropertyRead = true;
-      isLazyHalEnabled = (!strcmp(device, "bengal") ? true : false);
-      if (!isLazyHalEnabled && !strcmp(device, "msm8937")) {
-        isLazyHalEnabled = property_get_bool("ro.vendor.bt.enablelazyhal", false);
-      }
-      ALOGD("%s isLazyHalEnabled: %d", __func__, isLazyHalEnabled);
-    } else {
-      ALOGE("%s: Failed to read property", __func__);
-    }
-  }
-
-  return isLazyHalEnabled;
-}
-#endif
 
 /*******************************************************************************
 **
@@ -141,23 +128,19 @@ static bool getVendorProperties(uint32_t vPropType, std::vector<vendor_property_
   bool status = false;
 
   LOG_INFO(LOG_TAG, "%s ", __func__);
+  btConfigStoreHal_2_0 = IBTConfigStore_V2_0::getService();
 
-  if (btConfigStore == nullptr)
-    btConfigStore = IBTConfigStore::getService();
 
-  if (btConfigStore != nullptr) {
-    hidl_vec<VendorProperty> vendorPropList;
-    auto halResult = Result::UNKNOWN_ERROR;
-    auto cb = [&](Result result, hidl_vec<VendorProperty> vendorPropListCb) {
+  if (btConfigStoreHal_2_0 != nullptr) {
+    hidl_vec<VendorProperty_V2_0> vendorPropList;
+    auto halResult = Result_V2_0::UNKNOWN_ERROR;
+    auto cb = [&](Result_V2_0 result, hidl_vec<VendorProperty_V2_0> vendorPropListCb) {
       halResult = result;
       vendorPropList = vendorPropListCb;
     };
 
-    auto hidlResult = btConfigStore->getVendorProperties(vPropType, cb);
-
-    LOG_INFO(LOG_TAG, "halResult = %d", halResult);
-
-    if (hidlResult.isOk() && halResult == Result::SUCCESS){
+    btConfigStoreHal_2_0->getVendorProperties(vPropType, cb);
+    if (halResult == Result_V2_0::SUCCESS) {
       for (auto&& vendorProp : vendorPropList) {
         vendor_property_t vProp;
 
@@ -169,24 +152,48 @@ static bool getVendorProperties(uint32_t vPropType, std::vector<vendor_property_
       }
       status = true;
     }
-  } else {
-    LOG_WARN(LOG_TAG,"%s btConfigStore hal interface is null", __func__);
-    if (btConfigStoreLoadProperties(vPropType, vPropList)){
-      LOG_INFO(LOG_TAG, "Properties are successfully read from %s",
-          BT_CONFIG_STORE_PATH);
 
-      status = true;
+  } else {
+    btConfigStoreHal_1_0 = IBTConfigStore_V1_0::getService();
+    if (btConfigStoreHal_1_0 != nullptr) {
+      hidl_vec<VendorProperty_V1_0> vendorPropList;
+      auto halResult = Result_V1_0::UNKNOWN_ERROR;
+      auto cb = [&](Result_V1_0 result, hidl_vec<VendorProperty_V1_0> vendorPropListCb) {
+        halResult = result;
+        vendorPropList = vendorPropListCb;
+      };
+
+      btConfigStoreHal_1_0->getVendorProperties(vPropType, cb);
+      if (halResult == Result_V1_0::SUCCESS){
+        for (auto&& vendorProp : vendorPropList) {
+          vendor_property_t vProp;
+
+          vProp.type = vendorProp.type;
+          strlcpy(vProp.value, vendorProp.value.c_str(), sizeof(vProp.value));
+          vPropList.push_back(vProp);
+          LOG_INFO(LOG_TAG, "prop type: %s, prop_value: %s",
+              convertPropTypeToStringFormat(vProp.type), vProp.value);
+        }
+        status = true;
+      }
+    } else {
+        LOG_WARN(LOG_TAG,"%s btConfigStore hal interface is null", __func__);
+        if (btConfigStoreLoadProperties(vPropType, vPropList)){
+          LOG_INFO(LOG_TAG, "Properties are successfully read from %s",
+              BT_CONFIG_STORE_PATH);
+
+          status = true;
+        }
     }
   }
 
-#ifdef ARCH_ARM_32
-  if (btConfigStore != nullptr && IsLazyHalSupported()) {
-    LOG_DEBUG(LOG_TAG, "%s: decrementing HIDL usage counter", __func__);
+  if (IsLazyHalSupported && (btConfigStoreHal_2_0 != nullptr
+      || btConfigStoreHal_1_0 != nullptr))
     IPCThreadState::self()->flushCommands();
-  }
-#endif
 
-  btConfigStore = nullptr;
+  btConfigStoreHal_2_0 = nullptr;
+  btConfigStoreHal_1_0 = nullptr;
+
   return status;
 }
 
@@ -206,42 +213,154 @@ static bool getVendorProperties(uint32_t vPropType, std::vector<vendor_property_
 static bool setVendorProperty(uint32_t type, const char * value)
 {
   bool status = false;
+  std::string vPropValue(value);
 
   LOG_INFO(LOG_TAG, "%s ", __func__);
 
-  if (btConfigStore == nullptr)
-    btConfigStore = IBTConfigStore::getService();
+  btConfigStoreHal_2_0 = IBTConfigStore_V2_0::getService();
 
-  if (btConfigStore != nullptr) {
-    std::string vPropValue(value);
-    VendorProperty vProp = {type, vPropValue};
-    Result halResult = btConfigStore->setVendorProperty(vProp);
+  if (btConfigStoreHal_2_0 != nullptr) {
+    VendorProperty_V2_0 vProp = {type, vPropValue};
+    Result_V2_0 halResult = Result_V2_0::UNKNOWN_ERROR;
+
+    halResult = btConfigStoreHal_2_0->setVendorProperty(vProp);
 
     LOG_INFO(LOG_TAG, "%s:: halResult = %d", __func__, halResult);
 
-    if (halResult == Result::SUCCESS){
+    if (halResult == Result_V2_0::SUCCESS){
       status = true;
     }
   } else {
-    LOG_WARN(LOG_TAG, "%s btConfigStore is null", __func__);
+    btConfigStoreHal_1_0 = IBTConfigStore_V1_0::getService();
+    if (btConfigStoreHal_1_0 != nullptr) {
+      VendorProperty_V1_0 vProp = {type, vPropValue};
+      Result_V1_0 halResult = Result_V1_0::UNKNOWN_ERROR;
+
+      halResult = btConfigStoreHal_1_0->setVendorProperty(vProp);
+
+      LOG_INFO(LOG_TAG, "%s:: halResult = %d", __func__, halResult);
+
+      if (halResult == Result_V1_0::SUCCESS) {
+        status = true;
+      }
+    } else {
+      LOG_WARN(LOG_TAG, "%s btConfigStore is null", __func__);
+    }
   }
 
-#ifdef ARCH_ARM_32
-  if (btConfigStore != nullptr && IsLazyHalSupported()) {
-    LOG_DEBUG(LOG_TAG, "%s: decrementing HIDL usage counter", __func__);
+  if (IsLazyHalSupported && (btConfigStoreHal_2_0 != nullptr
+      || btConfigStoreHal_1_0 != nullptr))
     IPCThreadState::self()->flushCommands();
-  }
-#endif
 
-  btConfigStore = nullptr;
+  btConfigStoreHal_2_0 = nullptr;
+  btConfigStoreHal_1_0 = nullptr;
   return status;
 }
 
 /*******************************************************************************
 **
-** Function         getAddOnFeatures
+** Function         getControllerAddOnFeatures
 **
-** Description      This function is used to read BT add on features from bt config store
+** Description      This function is used to read BT controller add on features from bt config store
+**                  hidl transport. It makes a binder call to hal daemon
+**
+** Parameters:      pointer to controller_add_on_features_list_t
+**
+**
+** Returns          bool
+**
+*******************************************************************************/
+static bool getControllerAddOnFeatures(controller_add_on_features_list_t *features_list)
+{
+
+  bool status = false;
+  LOG_INFO(LOG_TAG, "%s ", __func__);
+
+  btConfigStoreHal_2_0 = IBTConfigStore_V2_0::getService();
+
+  if (btConfigStoreHal_2_0 != nullptr) {
+    ControllerAddOnFeatures featureList;
+    auto halResult = Result_V2_0::UNKNOWN_ERROR;
+    auto cb = [&](Result_V2_0 result, ControllerAddOnFeatures featureListCb) {
+      halResult = result;
+      featureList = featureListCb;
+    };
+
+    auto hidlResult = btConfigStoreHal_2_0->getControllerAddOnFeatures(cb);
+
+    LOG_INFO(LOG_TAG, "%s:: halResult = %d", __func__, halResult);
+
+    if (hidlResult.isOk() && halResult == Result_V2_0::SUCCESS) {
+      std::stringstream features;
+
+      features_list->product_id = featureList.product_id;
+      features_list->rsp_version = featureList.rsp_version;
+      features_list->feat_mask_len = featureList.feat_mask_len;
+      memcpy(features_list->features, featureList.features.data(),
+          featureList.features.size());
+
+      std::copy(features_list->features, features_list->features + features_list->feat_mask_len,
+          std::ostream_iterator<int>(features << std::showbase <<std:: hex, " "));
+
+
+      LOG_INFO(LOG_TAG,
+          "%s:: product_id = %d, version = %d, feat_mask_len = %d features data: %s",
+          __func__, features_list->product_id, features_list->rsp_version,
+          features_list->feat_mask_len, features.str().c_str());
+      status = true;
+    }
+
+  } else {
+    btConfigStoreHal_1_0 = IBTConfigStore_V1_0::getService();
+    if (btConfigStoreHal_1_0 != nullptr) {
+      AddOnFeaturesList featureList;
+      auto halResult = Result_V1_0::UNKNOWN_ERROR;
+      auto cb = [&](Result_V1_0 result, AddOnFeaturesList featureListCb) {
+        halResult = result;
+        featureList = featureListCb;
+      };
+
+      auto hidlResult = btConfigStoreHal_1_0->getAddOnFeatures(cb);
+
+      LOG_INFO(LOG_TAG, "%s:: halResult = %d", __func__, halResult);
+
+      if (hidlResult.isOk() && halResult == Result_V1_0::SUCCESS) {
+        std::stringstream features;
+
+        features_list->product_id = featureList.product_id;
+        features_list->rsp_version = featureList.rsp_version;
+        features_list->feat_mask_len = featureList.feat_mask_len;
+        memcpy(features_list->features, &featureList.features,
+            features_list->feat_mask_len);
+
+        std::copy(features_list->features, features_list->features + features_list->feat_mask_len,
+            std::ostream_iterator<int>(features << std::showbase <<std:: hex, " "));
+
+        LOG_INFO(LOG_TAG,
+            "%s:: product_id = %d, version = %d, feat_mask_len = %d features data: %s",
+            __func__, features_list->product_id, features_list->rsp_version,
+            features_list->feat_mask_len, features.str().c_str());
+
+        status = true;
+      }
+    }
+  }
+
+  if (IsLazyHalSupported && (btConfigStoreHal_2_0 != nullptr
+      || btConfigStoreHal_1_0 != nullptr))
+    IPCThreadState::self()->flushCommands();
+
+  btConfigStoreHal_2_0 = nullptr;
+  btConfigStoreHal_1_0 = nullptr;
+
+  return status;
+}
+
+/*******************************************************************************
+**
+** Function         getHostAddOnFeatures
+**
+** Description      This function is used to read BT host add on features from bt config store
 **                  hidl transport. It makes a binder call to hal daemon
 **
 ** Parameters:      pointer to add_on_features_list_t
@@ -250,60 +369,50 @@ static bool setVendorProperty(uint32_t type, const char * value)
 ** Returns          bool
 **
 *******************************************************************************/
-static bool getAddOnFeatures(add_on_features_list_t *features_list)
+static bool getHostAddOnFeatures(host_add_on_features_list_t *features_list)
 {
   bool status = false;
 
   LOG_INFO(LOG_TAG, "%s ", __func__);
 
-  if (btConfigStore == nullptr)
-    btConfigStore = IBTConfigStore::getService();
+  btConfigStoreHal_2_0 = IBTConfigStore_V2_0::getService();
 
-  if (btConfigStore != nullptr) {
-    AddOnFeaturesList featureList;
-    auto halResult = Result::UNKNOWN_ERROR;
-    auto cb = [&](Result result, AddOnFeaturesList featureListCb) {
+  if (btConfigStoreHal_2_0 != nullptr) {
+    HostAddOnFeatures featureList;
+    auto halResult = Result_V2_0::UNKNOWN_ERROR;
+    auto cb = [&](Result_V2_0 result, HostAddOnFeatures featureListCb) {
       halResult = result;
       featureList = featureListCb;
     };
 
-    auto hidlResult = btConfigStore->getAddOnFeatures(cb);
+    auto hidlResult = btConfigStoreHal_2_0->getHostAddOnFeatures(cb);
 
     LOG_INFO(LOG_TAG, "%s:: halResult = %d", __func__, halResult);
 
-    if (hidlResult.isOk() && halResult == Result::SUCCESS) {
-      char features[40];
+    if (hidlResult.isOk() && halResult == Result_V2_0::SUCCESS) {
+      std::stringstream features;
 
-      features_list->product_id = featureList.product_id;
-      features_list->rsp_version = featureList.rsp_version;
       features_list->feat_mask_len = featureList.feat_mask_len;
-      memcpy(features_list->features, &featureList.features,
-          sizeof(features_list->features));
-      snprintf(features, sizeof(features),
-          "0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x",
-          features_list->features[0], features_list->features[1],
-          features_list->features[2], features_list->features[3],
-          features_list->features[4], features_list->features[5],
-          features_list->features[6], features_list->features[7]);
+      memcpy(features_list->features, featureList.features.data(),
+          featureList.features.size());
 
-      LOG_INFO(LOG_TAG,
-          "%s:: product_id = %d, version = %d, feat_mask_len = %d features data: %s",
-          __func__, features_list->product_id, features_list->rsp_version,
-          features_list->feat_mask_len, features);
+      std::copy(features_list->features, features_list->features + features_list->feat_mask_len,
+          std::ostream_iterator<int>(features << std::showbase <<std:: hex, " "));
+
+
+      LOG_INFO(LOG_TAG, "%s:: feat_mask_len = %d features data: %s",
+          __func__, features_list->feat_mask_len, features.str().c_str());
       status = true;
     }
   } else {
-    LOG_WARN(LOG_TAG, "%s add feature is not avaliable", __func__);
+    LOG_WARN(LOG_TAG, "%s add on features is not avaliable", __func__);
   }
 
-#ifdef ARCH_ARM_32
-  if (btConfigStore != nullptr && IsLazyHalSupported()) {
-    LOG_DEBUG(LOG_TAG, "%s: decrementing HIDL usage counter", __func__);
+  if (IsLazyHalSupported && (btConfigStoreHal_2_0 != nullptr))
     IPCThreadState::self()->flushCommands();
-  }
-#endif
 
-  btConfigStore = nullptr;
+  btConfigStoreHal_2_0 = nullptr;
+
   return status;
 }
 
@@ -535,10 +644,10 @@ static bt_soc_type_t convertSocNameToBTSocType(const char * soc_name)
     soc_type = BT_SOC_TYPE_CHEROKEE;
   } else if (!strncasecmp(soc_name, "ath3k", sizeof("ath3k"))) {
     soc_type = BT_SOC_TYPE_AR3K;
-  } else if (!strncasecmp(soc_name, "napier", sizeof("napier"))) {
-    soc_type = BT_SOC_TYPE_NAPIER;
   } else if (!strncasecmp(soc_name, "hastings", sizeof("hastings"))) {
     soc_type = BT_SOC_TYPE_HASTINGS;
+  } else if (!strncasecmp(soc_name, "moselle", sizeof("moselle"))) {
+    soc_type = BT_SOC_TYPE_MOSELLE;
   } else if (!strncasecmp(soc_name, "pronto", sizeof("pronto"))) {
     soc_type = BT_SOC_TYPE_DEFAULT;
   } else {

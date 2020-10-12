@@ -238,8 +238,7 @@ uint16_t GAP_ConnOpen(const char* p_serv_name, uint8_t service_id,
 
   /* Register the PSM with L2CAP */
   if (transport == BT_TRANSPORT_BR_EDR) {
-    p_ccb->psm = L2CA_REGISTER(
-        psm, &conn.reg_info, AMP_AUTOSWITCH_ALLOWED | AMP_USE_AMP_IF_POSSIBLE);
+    p_ccb->psm = L2CA_REGISTER(psm, &conn.reg_info, false /* enable_snoop */);
     if (p_ccb->psm == 0) {
       LOG(ERROR) << StringPrintf("%s: Failure registering PSM 0x%04x", __func__,
                                  psm);
@@ -482,6 +481,69 @@ uint16_t GAP_ConnBTRead(uint16_t gap_handle, BT_HDR** pp_buf) {
     *pp_buf = NULL;
     return (GAP_NO_DATA_AVAIL);
   }
+}
+
+/* Try to write the queued data to l2ca. Return true on success, or if queue is
+ * congested. False if error occured when writing. */
+static bool gap_try_write_queued_data(tGAP_CCB* p_ccb) {
+  if (p_ccb->is_congested) return true;
+
+  /* Send the buffer through L2CAP */
+  BT_HDR* p_buf;
+  while ((p_buf = (BT_HDR*)fixed_queue_try_dequeue(p_ccb->tx_queue)) != NULL) {
+    uint8_t status = L2CA_DATA_WRITE(p_ccb->connection_id, p_buf);
+
+    if (status == L2CAP_DW_CONGESTED) {
+      p_ccb->is_congested = true;
+      return true;
+    } else if (status != L2CAP_DW_SUCCESS)
+      return false;
+  }
+  return true;
+}
+
+/*******************************************************************************
+ *
+ * Function         GAP_ConnWriteData
+ *
+ * Description      Normally not GKI aware application will call this function
+ *                  to send data to the connection.
+ *
+ * Parameters:      handle      - Handle of the connection returned in the Open
+ *                  msg         - pointer to single SDU to send. This function
+ *                                will take ownership of it.
+ *
+ * Returns          BT_PASS                 - data read
+ *                  GAP_ERR_BAD_HANDLE      - invalid handle
+ *                  GAP_ERR_BAD_STATE       - connection not established
+ *                  GAP_CONGESTION          - system is congested
+ *
+ ******************************************************************************/
+uint16_t GAP_ConnWriteData(uint16_t gap_handle, BT_HDR* msg) {
+  tGAP_CCB* p_ccb = gap_find_ccb_by_handle(gap_handle);
+
+  if (!p_ccb) {
+    osi_free(msg);
+    return GAP_ERR_BAD_HANDLE;
+  }
+
+  if (p_ccb->con_state != GAP_CCB_STATE_CONNECTED) {
+    osi_free(msg);
+    return GAP_ERR_BAD_STATE;
+  }
+
+  if (msg->len > p_ccb->rem_mtu_size) {
+    osi_free(msg);
+    return GAP_ERR_ILL_PARM;
+  }
+
+  DVLOG(1) << StringPrintf("GAP_WriteData %d bytes", msg->len);
+
+  fixed_queue_enqueue(p_ccb->tx_queue, msg);
+
+  if (!gap_try_write_queued_data(p_ccb)) return GAP_ERR_BAD_STATE;
+
+  return (BT_PASS);
 }
 
 /*******************************************************************************
@@ -1066,7 +1128,8 @@ static void gap_congestion_ind(uint16_t lcid, bool is_congested) {
     p_ccb->is_link_policy_set = TRUE;
   } else {
     if (p_ccb->is_link_policy_set) {
-      BTM_SetLinkPolicy(p_ccb->rem_dev_address, &btm_cb.btm_def_link_policy);
+      uint16_t btm_def_link_policy_local = btm_cb.btm_def_link_policy;
+      BTM_SetLinkPolicy(p_ccb->rem_dev_address, &btm_def_link_policy_local);
       p_ccb->is_link_policy_set = FALSE;
     }
   }

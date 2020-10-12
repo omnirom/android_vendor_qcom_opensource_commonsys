@@ -35,6 +35,7 @@
 #include "bt_utils.h"
 #include "bt_trace.h"
 #include "btu.h"
+#include "avdt_api.h"
 
 #include "hcidefs.h"
 #include "hcimsgs.h"
@@ -52,6 +53,7 @@
 #include "osi/include/properties.h"
 #include "sdp_api.h"
 #include "sdpint.h"
+#include "btif/include/btif_config.h"
 //#include "service/logging_helpers.h"
 
 #include <cutils/properties.h>
@@ -68,6 +70,7 @@
 #define PROFILE_VERSION_POSITION 7
 #define SDP_PROFILE_DESC_LENGTH 8
 #define AVRCP_SUPPORTED_FEATURES_POSITION 1
+#define AVRCP_PLAYER_APP_SETTINGS_SUPPORT_BITMASK 0x10
 #define AVRCP_BROWSE_SUPPORT_BITMASK 0x40
 #define AVRCP_MULTI_PLAYER_SUPPORT_BITMASK 0x80
 #define AVRCP_CA_SUPPORT_BITMASK 0x01
@@ -97,6 +100,11 @@ static tSDP_RECORD *sdp_upgrade_pse_record(tSDP_RECORD *p_rec,
                                       RawAddress remote_address);
 
 static bool check_remote_pbap_version_102(RawAddress remote_addr);
+
+static tSDP_RECORD *sdp_upgrade_mse_record(tSDP_RECORD *p_rec,
+                                      RawAddress remote_address);
+
+static bool check_remote_map_version_104(RawAddress remote_addr);
 
 /******************************************************************************/
 /*                E R R O R   T E X T   S T R I N G S                         */
@@ -145,6 +153,13 @@ static bool check_remote_pbap_version_102(RawAddress remote_addr);
 #endif
 
 #define PBAP_1_2 0x0102
+#define PBAP_1_2_BL_LEN 14
+
+#ifndef SDP_ENABLE_PTS_MAP
+#define SDP_ENABLE_PTS_MAP  "vendor.bt.pts.map"
+#endif
+
+#define MAP_1_4 0x0104
 
 struct blacklist_entry
 {
@@ -152,7 +167,7 @@ struct blacklist_entry
     char addr[3];
 };
 
-struct pce_entry
+struct dynamic_upgrade_entry
 {
     uint16_t ver;
     char addr[3];
@@ -163,8 +178,12 @@ uint16_t get_dut_avrcp_version() {
     // This api get avrcp version stored in property
     uint16_t profile_version = AVRC_REV_1_0;
     char avrcp_version[PROPERTY_VALUE_MAX] = {0};
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
     property_get(AVRCP_VERSION_PROPERTY, avrcp_version,
-                     AVRCP_1_4_STRING);
+                     AVRCP_1_6_STRING);
+#else
+    strlcpy(avrcp_version, AVRCP_1_6_STRING, sizeof(AVRCP_1_6_STRING));
+#endif
     SDP_TRACE_DEBUG(" %s AVRCP version used for sdp: \"%s\"",
              __func__,avrcp_version);
 
@@ -174,46 +193,79 @@ uint16_t get_dut_avrcp_version() {
     } else if (!strncmp(AVRCP_1_5_STRING, avrcp_version,
                         sizeof(AVRCP_1_5_STRING))) {
       profile_version = AVRC_REV_1_5;
-    } else {
+    } else if (!strncmp(AVRCP_1_4_STRING, avrcp_version,
+                        sizeof(AVRCP_1_4_STRING))) {
       profile_version = AVRC_REV_1_4;
+    } else {
+      profile_version = AVRC_REV_1_3;
     }
     return profile_version;
 }
+
+/****************************************************************************
+**
+** Function         sdp_get_stored_avrc_tg_version
+**
+** Description      This function is called to fetch stored remote's
+**                  avrcp version
+**
+** Returns          int
+**
+*******************************************************************************/
 int sdp_get_stored_avrc_tg_version(RawAddress addr)
 {
-    int stored_ver = AVRC_REV_INVALID;
-    struct blacklist_entry data;
-    FILE *fp;
-    bool feature = false;
-    profile_info_t profile_info = AVRCP_0103_SUPPORT;
-    const profile_t profile = AVRCP_ID;
-
+    uint16_t avrcp_version = 0;
+    uint16_t avrcp_features = 0;
     SDP_TRACE_DEBUG("%s target BD Addr: %s",\
              __func__, addr.ToString().c_str());
-
-
-    feature = profile_feature_fetch(profile, profile_info);
-    if (feature == true) {
-        SDP_TRACE_ERROR("AVRCP feature flag is set to 1.3 hence aborting");
-        return stored_ver;
-    }
-    fp = fopen(AVRC_PEER_VERSION_CONF_FILE, "rb");
-    if (!fp) {
-       SDP_TRACE_ERROR("%s unable to open AVRC Conf file for read: err: (%s)",\
-                                        __func__, strerror(errno));
-       return stored_ver;
-    }
-    while (fread(&data, sizeof(data), 1, fp) != 0) {
-        SDP_TRACE_DEBUG("Entry: addr = %x:%x:%x, ver = 0x%x",\
-                data.addr[0], data.addr[1], data.addr[2], data.ver);
-        if(!memcmp(&addr, data.addr, 3)) {
-            stored_ver = data.ver;
-            SDP_TRACE_DEBUG("Entry found with version: 0x%x", stored_ver);
+    bool feature = profile_feature_fetch(AVRCP_ID, AVRCP_COVERART_SUPPORT);
+    if (btif_config_get_uint16(addr.ToString().c_str(), AV_REM_CTRL_VERSION_CONFIG_KEY,
+                (uint16_t*)&avrcp_version)) {
+      SDP_TRACE_DEBUG("%s : Entry found in pairing database, remote version: 0x%x", __func__, avrcp_version);
+      if (btif_config_get_uint16(addr.ToString().c_str(), AV_REM_CTRL_FEATURES_CONFIG_KEY, (uint16_t*)&avrcp_features)) {
+        bool CA_AVRC_BIT = ((AVRCP_FEAT_CA_BIT & avrcp_features) == AVRCP_FEAT_CA_BIT);
+        bool BRW_AVRC_BIT = ((AVRCP_FEAT_BRW_BIT & avrcp_features) == AVRCP_FEAT_BRW_BIT);
+        uint16_t dut_avrcp_version = get_dut_avrcp_version();
+        uint16_t ver = (dut_avrcp_version > avrcp_version) ?
+                           avrcp_version : dut_avrcp_version;
+        if (CA_AVRC_BIT & feature)
+          ver = AVRCP_MASK_CA_BIT | ver;
+        if (BRW_AVRC_BIT)
+          ver = AVRCP_MASK_BRW_BIT | ver;
+        SDP_TRACE_DEBUG("%s: return version with (CA+BRW): 0x%x", __func__, ver);
+        return ver;
+      } else {
+        SDP_TRACE_DEBUG("%s: failed to fetch features from pairing database, returning AVRC_1_3", __func__);
+        return AVRC_REV_1_3;
+      }
+    } else {
+      FILE *fp;
+      struct blacklist_entry data;
+      bool is_present = false;
+      fp = fopen(AVRC_PEER_VERSION_CONF_FILE, "rb");
+      if (!fp) {
+        SDP_TRACE_ERROR("%s unable to open AVRC Conf file for read: error: (%s)",\
+                                                 __func__, strerror(errno));
+      } else {
+        while (fread(&data, sizeof(data), 1, fp) != 0) {
+          if (!memcmp(&addr, data.addr, 3)) {
+            is_present = true;
             break;
+          }
         }
+        fclose(fp);
+        if (is_present) {
+          if (data.ver >= AVRC_REV_1_4)
+            data.ver |= AVRCP_MASK_BRW_BIT;
+          if (data.ver >= AVRC_REV_1_6)
+            data.ver |= AVRCP_MASK_CA_BIT;
+          SDP_TRACE_DEBUG("%s: return AVRC version : 0x%x", __func__, data.ver);
+          return data.ver;
+        }
+      }
     }
-    fclose(fp);
-    return stored_ver;
+    SDP_TRACE_DEBUG("%s: failed to fetch version from pairing database, returning AVRC_1_3", __func__);
+    return AVRC_REV_1_3;
 }
 
 /****************************************************************************
@@ -254,73 +306,6 @@ bool sdp_dev_blacklisted_for_avrcp15 (RawAddress addr)
 
 /*************************************************************************************
 **
-** Function        sdp_fallback_avrcp_version
-**
-** Description     Checks if UUID is AV Remote Control, attribute id
-**                 is Profile descriptor list and remote BD address
-**                 matches device blacklist, change Avrcp version to 1.3
-**
-** Returns         bool: if we have to restore value to our local structure
-**
-***************************************************************************************/
-bool sdp_fallback_avrcp_version (tSDP_ATTRIBUTE *p_attr, RawAddress remote_address)
-{
-    char a2dp_role[PROPERTY_VALUE_MAX] = "false";
-    uint16_t dut_profile_version;
-    if ((p_attr->id == ATTR_ID_BT_PROFILE_DESC_LIST) &&
-        (p_attr->len >= SDP_PROFILE_DESC_LENGTH))
-    {
-        /* As per current DB implementation UUID is condidered as 16 bit */
-        if (((p_attr->value_ptr[3] << 8) | (p_attr->value_ptr[4])) ==
-                UUID_SERVCLASS_AV_REMOTE_CONTROL)
-        {
-            int ver;
-            if (sdp_dev_blacklisted_for_avrcp15 (remote_address))
-            {
-                p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x03; // Update AVRCP version as 1.3
-                SDP_TRACE_ERROR("SDP Change AVRCP Version = 0x%x",
-                         p_attr->value_ptr[PROFILE_VERSION_POSITION]);
-                return TRUE;
-            }
-            property_get("persist.vendor.service.bt.a2dp.sink", a2dp_role, "false");
-            if (!strncmp("false", a2dp_role, 5)) {
-                ver = sdp_get_stored_avrc_tg_version (remote_address);
-                if (ver != AVRC_REV_INVALID)
-                {
-                    SDP_TRACE_DEBUG("Stored AVRC TG version: 0x%x", ver);
-                    p_attr->value_ptr[PROFILE_VERSION_POSITION] = (uint8_t)(ver & 0x00ff);
-                    SDP_TRACE_DEBUG("SDP Change AVRCP Version = 0x%x",
-                                 p_attr->value_ptr[PROFILE_VERSION_POSITION]);
-                    /* we have already written value from file to response and local
-                     * structure */
-                     dut_profile_version = get_dut_avrcp_version();
-                     if((dut_profile_version == AVRC_REV_1_6) && (ver != AVRC_REV_1_6)) {
-                        SDP_TRACE_ERROR(" %s This should not happen ",__func__);
-                        return TRUE;// do fallback to older version in record
-                     }
-                     if((dut_profile_version == AVRC_REV_1_5) && (ver != AVRC_REV_1_5)) {
-                        return TRUE;
-                     }
-                     /*
-                      * We don't have a check for 1.4, because for 1.3 we always write
-                      * AVRC_REV_INVALID, and in that case it falls to below else case
-                      */
-                     return FALSE;
-                }
-                else {
-                    p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x03; // Update AVRCP ver as 1.3
-                    SDP_TRACE_DEBUG("Device not stored, Change AVRCP Version = 0x%x",
-                             p_attr->value_ptr[PROFILE_VERSION_POSITION]);
-                    return TRUE;
-                }
-            }
-        }
-    }
-    return FALSE;
-}
-
-/*************************************************************************************
-**
 ** Function        sdp_reset_avrcp_browsing_bit
 **
 ** Description     Checks if Service Class ID is AV Remote Control TG, attribute id
@@ -336,8 +321,40 @@ bool sdp_reset_avrcp_browsing_bit (tSDP_ATTRIBUTE attr, tSDP_ATTRIBUTE *p_attr,
     if ((p_attr->id == ATTR_ID_SUPPORTED_FEATURES) && (attr.id == ATTR_ID_SERVICE_CLASS_ID_LIST) &&
         (((attr.value_ptr[1] << 8) | (attr.value_ptr[2])) == UUID_SERVCLASS_AV_REM_CTRL_TARGET))
     {
-        int ver;
+        int version;
+        bool browsing_supported = false;
         if (sdp_dev_blacklisted_for_avrcp15 (remote_address))
+        {
+            SDP_TRACE_ERROR("Reset Browse feature bitmask");
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &= ~AVRCP_BROWSE_SUPPORT_BITMASK;
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &=
+                    ~AVRCP_MULTI_PLAYER_SUPPORT_BITMASK;
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &=
+                    ~AVRCP_PLAYER_APP_SETTINGS_SUPPORT_BITMASK;
+            return TRUE;
+        }
+        version = sdp_get_stored_avrc_tg_version (remote_address);
+        browsing_supported = ((AVRCP_MASK_BRW_BIT & version) == AVRCP_MASK_BRW_BIT);
+        version = (AVRCP_VERSION_BIT_MASK & version);
+        SDP_TRACE_ERROR("Stored AVRC TG version: 0x%x", version);
+
+        if ((version < AVRC_REV_1_4) || (interop_match_addr_or_name(
+                INTEROP_DISABLE_PLAYER_APPLICATION_SETTING_CMDS, &remote_address)))
+        {
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &=
+                    ~AVRCP_PLAYER_APP_SETTINGS_SUPPORT_BITMASK;
+        } else {
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] |=
+                    AVRCP_PLAYER_APP_SETTINGS_SUPPORT_BITMASK;
+        }
+
+#if (defined(AVRC_QTI_V1_3_OPTIONAL_FEAT) && AVRC_QTI_V1_3_OPTIONAL_FEAT == TRUE)
+#else
+        p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &=
+                ~AVRCP_PLAYER_APP_SETTINGS_SUPPORT_BITMASK;
+#endif
+
+        if (version < AVRC_REV_1_4 || !browsing_supported)
         {
             SDP_TRACE_ERROR("Reset Browse feature bitmask");
             p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &= ~AVRCP_BROWSE_SUPPORT_BITMASK;
@@ -345,15 +362,13 @@ bool sdp_reset_avrcp_browsing_bit (tSDP_ATTRIBUTE attr, tSDP_ATTRIBUTE *p_attr,
                     ~AVRCP_MULTI_PLAYER_SUPPORT_BITMASK;
             return TRUE;
         }
-        ver = sdp_get_stored_avrc_tg_version (remote_address);
-        SDP_TRACE_ERROR("Stored AVRC TG version: 0x%x", ver);
-        if ((ver < AVRC_REV_1_4) || (ver == AVRC_REV_INVALID))
+        if (version >= AVRC_REV_1_4 && browsing_supported)
         {
-            SDP_TRACE_ERROR("Reset Browse feature bitmask");
-            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &= ~AVRCP_BROWSE_SUPPORT_BITMASK;
-            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] &=
-                    ~AVRCP_MULTI_PLAYER_SUPPORT_BITMASK;
-            return TRUE;
+            SDP_TRACE_ERROR("Set Browse feature bitmask");
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] |= AVRCP_BROWSE_SUPPORT_BITMASK;
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION] |=
+                    AVRCP_MULTI_PLAYER_SUPPORT_BITMASK;
+            return FALSE;
         }
     }
     return FALSE;
@@ -376,16 +391,27 @@ bool sdp_reset_avrcp_cover_art_bit (tSDP_ATTRIBUTE attr, tSDP_ATTRIBUTE *p_attr,
     if ((p_attr->id == ATTR_ID_SUPPORTED_FEATURES) && (attr.id == ATTR_ID_SERVICE_CLASS_ID_LIST) &&
         (((attr.value_ptr[1] << 8) | (attr.value_ptr[2])) == UUID_SERVCLASS_AV_REM_CTRL_TARGET))
     {
-        int ver;
-        ver = sdp_get_stored_avrc_tg_version (remote_address);
-        SDP_TRACE_ERROR("Stored AVRC TG version: 0x%x", ver);
-        if ((ver < AVRC_REV_1_6) || (ver == AVRC_REV_INVALID))
+        int version;
+        bool cover_art_supported = false;
+        version = sdp_get_stored_avrc_tg_version (remote_address);
+        cover_art_supported = ((AVRCP_MASK_CA_BIT & version) == AVRCP_MASK_CA_BIT);
+        version = (AVRCP_VERSION_BIT_MASK & version);
+        SDP_TRACE_ERROR("Stored AVRC TG version: 0x%x", version);
+        if (version < AVRC_REV_1_6 || !cover_art_supported)
         {
             SDP_TRACE_ERROR("Reset Cover Art feature bitmask +1, 0x%x", p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION+1]);
             SDP_TRACE_ERROR("Reset Cover Art feature bitmask -1, 0x%x", p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]);
             p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1] &= ~AVRCP_CA_SUPPORT_BITMASK;
             SDP_TRACE_ERROR("Reset Cover Art feature bitmask, new -1, 0x%x", p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]);
             return TRUE;
+        }
+        if (version == AVRC_REV_1_6 && cover_art_supported)
+        {
+            SDP_TRACE_ERROR("Set Cover Art feature bitmask +1, 0x%x", p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION+1]);
+            SDP_TRACE_ERROR("Set Cover Art feature bitmask -1, 0x%x", p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]);
+            p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1] |= AVRCP_CA_SUPPORT_BITMASK;
+            SDP_TRACE_ERROR("Set Cover Art feature bitmask, new -1, 0x%x", p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]);
+            return FALSE;
         }
     }
     return FALSE;
@@ -540,7 +566,6 @@ static void process_service_search(tCONN_CB* p_ccb, uint16_t trans_num,
     return;
   }
   BE_STREAM_TO_UINT16(max_replies, p_req);
-    
   if (!max_replies) {
     sdpu_build_n_send_error (p_ccb, trans_num, SDP_INVALID_REQ_SYNTAX,
                              SDP_TEXT_BAD_MAX_ATTR_LIST);
@@ -660,6 +685,7 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
                                      uint8_t* p_req_end) {
   uint16_t max_list_len, len_to_send, cont_offset;
   int16_t rem_len;
+  char a2dp_role[PROPERTY_VALUE_MAX] = "false";
   tSDP_ATTR_SEQ attr_seq, attr_seq_sav;
   uint8_t *p_rsp, *p_rsp_start, *p_rsp_param_len;
   uint16_t rsp_param_len, xx;
@@ -669,11 +695,9 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
   bool is_cont = false;
   bool is_hfp_fallback = FALSE;
   uint16_t attr_len;
-  bool is_avrcp_fallback = FALSE;
-  bool is_avrcp_browse_bit_reset = FALSE;
-  bool is_avrcp_cover_bit_reset = FALSE;
-  uint16_t dut_profile_version;
-
+  uint16_t profile_version;
+  bool is_avrcp_browse_bit_set = FALSE;
+  bool is_avrcp_cover_bit_set = FALSE;
   if (p_req + sizeof(rec_handle) + sizeof(max_list_len) > p_req_end) {
     android_errorWriteLog(0x534e4554, "69384124");
     sdpu_build_n_send_error(p_ccb, trans_num, SDP_INVALID_SERV_REC_HDL,
@@ -717,8 +741,12 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
                             SDP_TEXT_BAD_HANDLE);
     return;
   }
-  p_rec = sdp_upgrade_pse_record(p_rec, p_ccb->device_address);
-
+  if (sdpu_is_map_0104_enabled()) {
+    p_rec = sdp_upgrade_mse_record(p_rec, p_ccb->device_address);
+  }
+  if(sdpu_is_pbap_0102_enabled()) {
+    p_rec = sdp_upgrade_pse_record(p_rec, p_ccb->device_address);
+  }
   /* Free and reallocate buffer */
   osi_free(p_ccb->rsp_list);
   p_ccb->rsp_list = (uint8_t*)osi_malloc(max_list_len);
@@ -763,8 +791,6 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
     p_ccb->cont_info.next_attr_index = 0;
     p_ccb->cont_info.attr_offset = 0;
   }
-
-  dut_profile_version = get_dut_avrcp_version();
   /* Search for attributes that match the list given to us */
   for (xx = p_ccb->cont_info.next_attr_index; xx < attr_seq.num_attr; xx++) {
     p_attr = sdp_db_find_attr_in_rec(p_rec, attr_seq.attr_entry[xx].start,
@@ -779,15 +805,35 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
       *  There is no point in resetting CA bit, because if DUT 1.6, we have to show 1.6
       *  even if remote misbhevaes. If we DUT is not 1.6 then there would be no ca bit
       */
-    if (dut_profile_version < AVRC_REV_1_6) {
-        is_avrcp_fallback = sdp_fallback_avrcp_version (p_attr, p_ccb->device_address);
-        // check for browse bit will happen always, because minimum DUT version is 1.4 now.
-        is_avrcp_browse_bit_reset = sdp_reset_avrcp_browsing_bit(
-                p_rec->attribute[1], p_attr, p_ccb->device_address);
-        is_avrcp_cover_bit_reset = sdp_reset_avrcp_cover_art_bit(
-                p_rec->attribute[1], p_attr, p_ccb->device_address);
-    }
-
+      if (sdp_reset_avrcp_browsing_bit(p_rec->attribute[1], p_attr, p_ccb->device_address))
+        is_avrcp_browse_bit_set = FALSE;
+      if (sdp_reset_avrcp_cover_art_bit(p_rec->attribute[1], p_attr, p_ccb->device_address))
+        is_avrcp_cover_bit_set = FALSE;
+      if ((p_attr->id == ATTR_ID_BT_PROFILE_DESC_LIST) &&
+             (p_attr->len >= SDP_PROFILE_DESC_LENGTH)) {
+        if (((p_attr->value_ptr[3] << 8) | (p_attr->value_ptr[4])) ==
+                UUID_SERVCLASS_AV_REMOTE_CONTROL) {
+          property_get("persist.vendor.service.bt.a2dp.sink", a2dp_role, "false");
+          if (!strncmp("false", a2dp_role, 5)) {
+            profile_version = sdp_get_stored_avrc_tg_version(p_ccb->device_address);
+            uint16_t ver = (AVRCP_VERSION_BIT_MASK & profile_version);
+            if (ver >= AVRC_REV_1_4) {
+              p_attr->value_ptr[PROFILE_VERSION_POSITION] = (uint8_t)(ver & 0x00ff);
+              SDP_TRACE_DEBUG("%s :Showing AVRCP version in SDP = 0x%x", __func__,
+                               p_attr->value_ptr[PROFILE_VERSION_POSITION]);
+            } else {
+              p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x03; // Update AVRCP version as 1.3
+              SDP_TRACE_DEBUG("%s : remote doesn't support cover art and browsing, showing AVRCP Version = 0x%x", __func__,
+                                 p_attr->value_ptr[PROFILE_VERSION_POSITION]);
+            }
+            if (sdp_dev_blacklisted_for_avrcp15 (p_ccb->device_address)) {
+              p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x03; // Update AVRCP version as 1.3
+              SDP_TRACE_DEBUG("%s :Device is blacklisted updating AVRCP Version = 0x%x", __func__,
+                                 p_attr->value_ptr[PROFILE_VERSION_POSITION]);
+            }
+          }
+        }
+      }
       is_hfp_fallback = sdp_change_hfp_version (p_attr, p_ccb->device_address);
       /* Check if attribute fits. Assume 3-byte value type/length */
       rem_len = max_list_len - (int16_t)(p_rsp - &p_ccb->rsp_list[0]);
@@ -844,52 +890,6 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
 
         xx--;
       }
-      if (is_avrcp_fallback) {
-      /* Restore Profile Version */
-          SDP_TRACE_ERROR("Restore Profile version");
-          switch(dut_profile_version) {
-              case AVRC_REV_1_6:
-               SDP_TRACE_ERROR(" %s, DUT version 1.6, avrcp_fallback should not be true", __func__);
-              break;
-              case AVRC_REV_1_5:
-                  p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x05;
-              break;
-              case AVRC_REV_1_4:
-                  p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x04;
-              break;
-          }
-          is_avrcp_fallback = FALSE;
-      }
-      if (is_avrcp_browse_bit_reset) {
-          /* Restore Browsing bit */
-          SDP_TRACE_ERROR("Restore Browsing bit");
-          switch(dut_profile_version) {
-              case AVRC_REV_1_6:
-               SDP_TRACE_ERROR(" %s, DUT version 1.6, browse_bit should not be true", __func__);
-              break;
-              case AVRC_REV_1_5:
-              case AVRC_REV_1_4:
-                  p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION]
-                                              |= AVRCP_BROWSE_SUPPORT_BITMASK;
-              break;
-          }
-          is_avrcp_browse_bit_reset = FALSE;
-      }
-      if (is_avrcp_cover_bit_reset) {
-          /* Restore Cover Art bit */
-          SDP_TRACE_ERROR("Restore Cover Art bit");
-          switch(dut_profile_version) {
-              case AVRC_REV_1_6:
-               SDP_TRACE_ERROR(" %s, DUT version 1.6, cover_art_bit should not be true", __func__);
-              break;
-              case AVRC_REV_1_5:
-              case AVRC_REV_1_4:
-                  p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]
-                                              |= AVRCP_CA_SUPPORT_BITMASK;
-              break;
-          }
-          is_avrcp_cover_bit_reset = FALSE;
-      }
       if (is_hfp_fallback) {
           SDP_TRACE_ERROR("Restore HFP version to 1.6");
           /* Update HFP version back to 1.6 */
@@ -897,52 +897,6 @@ static void process_service_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
           is_hfp_fallback = FALSE;
       }
     }
-  }
-  if (is_avrcp_fallback) {
-  /* Restore Profile Version */
-      SDP_TRACE_ERROR("Restore Profile version");
-      switch(dut_profile_version) {
-          case AVRC_REV_1_6:
-           SDP_TRACE_ERROR(" %s, DUT version 1.6, avrcp_fallback should not be true", __func__);
-          break;
-          case AVRC_REV_1_5:
-              p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x05;
-          break;
-          case AVRC_REV_1_4:
-              p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x04;
-          break;
-      }
-      is_avrcp_fallback = FALSE;
-  }
-  if (is_avrcp_browse_bit_reset) {
-      /* Restore Browsing bit */
-      SDP_TRACE_ERROR("Restore Browsing bit");
-      switch(dut_profile_version) {
-          case AVRC_REV_1_6:
-           SDP_TRACE_ERROR(" %s, DUT version 1.6, browse_bit should not be true", __func__);
-          break;
-          case AVRC_REV_1_5:
-          case AVRC_REV_1_4:
-              p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION]
-                                          |= AVRCP_BROWSE_SUPPORT_BITMASK;
-          break;
-      }
-      is_avrcp_browse_bit_reset = FALSE;
-  }
-  if (is_avrcp_cover_bit_reset) {
-      /* Restore Cover Art bit */
-      SDP_TRACE_ERROR("Restore Cover Art bit");
-      switch(dut_profile_version) {
-          case AVRC_REV_1_6:
-           SDP_TRACE_ERROR(" %s, DUT version 1.6, cover_art_bit should not be true", __func__);
-          break;
-          case AVRC_REV_1_5:
-          case AVRC_REV_1_4:
-              p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]
-                                          |= AVRCP_CA_SUPPORT_BITMASK;
-          break;
-      }
-      is_avrcp_cover_bit_reset = FALSE;
   }
   if (is_hfp_fallback) {
       SDP_TRACE_ERROR("Restore HFP version to 1.6");
@@ -1035,6 +989,7 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
                                             uint8_t* p_req_end) {
   uint16_t max_list_len;
   int16_t rem_len;
+  char a2dp_role[PROPERTY_VALUE_MAX] = "false";
   uint16_t len_to_send, cont_offset;
   tSDP_UUID_SEQ uid_seq;
   uint8_t *p_rsp, *p_rsp_start, *p_rsp_param_len;
@@ -1047,11 +1002,9 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
   uint8_t* p_seq_start = NULL;
   bool is_hfp_fallback = FALSE;
   uint16_t seq_len, attr_len;
-  bool is_avrcp_fallback = FALSE;
-  bool is_avrcp_browse_bit_reset = FALSE;
-  bool is_avrcp_cover_bit_reset = FALSE;
-  uint16_t dut_profile_version;
-
+  uint16_t profile_version;
+  bool is_avrcp_browse_bit_set = FALSE;
+  bool is_avrcp_cover_bit_set = FALSE;
   /* Extract the UUID sequence to search for */
   p_req = sdpu_extract_uid_seq(p_req, param_len, &uid_seq);
 
@@ -1130,14 +1083,20 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
     p_ccb->cont_info.last_attr_seq_desc_sent = false;
     p_ccb->cont_info.attr_offset = 0;
   }
-
+  bool is_mse_v14_enabled = sdpu_is_map_0104_enabled();
+  bool is_pse_v12_enabled = sdpu_is_pbap_0102_enabled();
   /* Get a list of handles that match the UUIDs given to us */
   for (p_rec = sdp_db_service_search(p_ccb->cont_info.prev_sdp_rec, &uid_seq);
        p_rec; p_rec = sdp_db_service_search(p_rec, &uid_seq)) {
     p_ccb->cont_info.curr_sdp_rec = p_rec;
     /* Store the actual record pointer which would be reused later */
     p_prev_rec = p_rec;
-    p_rec = sdp_upgrade_pse_record(p_rec, p_ccb->device_address);
+    if (is_mse_v14_enabled) {
+      p_rec = sdp_upgrade_mse_record(p_rec, p_ccb->device_address);
+    }
+    if (is_pse_v12_enabled) {
+      p_rec = sdp_upgrade_pse_record(p_rec, p_ccb->device_address);
+    }
     /* Allow space for attribute sequence type and length */
     p_seq_start = p_rsp;
     if (p_ccb->cont_info.last_attr_seq_desc_sent == false) {
@@ -1152,9 +1111,6 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
       }
       p_rsp += 3;
     }
-
-    dut_profile_version = get_dut_avrcp_version();
-
     /* Get a list of handles that match the UUIDs given to us */
     for (xx = p_ccb->cont_info.next_attr_index; xx < attr_seq.num_attr; xx++) {
       p_attr = sdp_db_find_attr_in_rec(p_rec, attr_seq.attr_entry[xx].start,
@@ -1169,15 +1125,36 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
           *  There is no point in resetting CA bit, because if DUT 1.6, we have to show 1.6
           *  even if remote misbhevaes. If we DUT is not 1.6 then there would be no ca bit
           */
-        if (dut_profile_version < AVRC_REV_1_6) {
-            is_avrcp_fallback = sdp_fallback_avrcp_version (p_attr, p_ccb->device_address);
-            // check for browse bit will happen always, because minimum DUT version is 1.4 now.
-            is_avrcp_browse_bit_reset = sdp_reset_avrcp_browsing_bit(
-                    p_rec->attribute[1], p_attr, p_ccb->device_address);
-            is_avrcp_cover_bit_reset = sdp_reset_avrcp_cover_art_bit(
-                    p_rec->attribute[1], p_attr, p_ccb->device_address);
-        }
 
+        if (sdp_reset_avrcp_browsing_bit(p_rec->attribute[1], p_attr, p_ccb->device_address))
+          is_avrcp_browse_bit_set = FALSE;
+        if (sdp_reset_avrcp_cover_art_bit(p_rec->attribute[1], p_attr, p_ccb->device_address))
+          is_avrcp_cover_bit_set = FALSE;
+        if ((p_attr->id == ATTR_ID_BT_PROFILE_DESC_LIST) &&
+               (p_attr->len >= SDP_PROFILE_DESC_LENGTH)) {
+          if (((p_attr->value_ptr[3] << 8) | (p_attr->value_ptr[4])) ==
+                  UUID_SERVCLASS_AV_REMOTE_CONTROL) {
+            property_get("persist.vendor.service.bt.a2dp.sink", a2dp_role, "false");
+            if (!strncmp("false", a2dp_role, 5)) {
+              profile_version = sdp_get_stored_avrc_tg_version(p_ccb->device_address);
+              uint16_t ver = (AVRCP_VERSION_BIT_MASK & profile_version);
+              if (ver >= AVRC_REV_1_4) {
+                p_attr->value_ptr[PROFILE_VERSION_POSITION] = (uint8_t)(ver & 0x00ff);
+                SDP_TRACE_DEBUG("%s : Showing AVRCP version in SDP = 0x%x", __func__,
+                                 p_attr->value_ptr[PROFILE_VERSION_POSITION]);
+              } else {
+                p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x03; // Update AVRCP version as 1.3
+                SDP_TRACE_DEBUG("%s : remote doesn't support cover art and browsing, showing AVRCP Version = 0x%x", __func__,
+                                   p_attr->value_ptr[PROFILE_VERSION_POSITION]);
+              }
+              if (sdp_dev_blacklisted_for_avrcp15 (p_ccb->device_address)) {
+                p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x03; // Update AVRCP version as 1.3
+                SDP_TRACE_DEBUG("%s :Device is blacklisted updating AVRCP Version = 0x%x", __func__,
+                                   p_attr->value_ptr[PROFILE_VERSION_POSITION]);
+              }
+            }
+          }
+        }
         is_hfp_fallback = sdp_change_hfp_version (p_attr, p_ccb->device_address);
         /* Check if attribute fits. Assume 3-byte value type/length */
         rem_len = max_list_len - (int16_t)(p_rsp - &p_ccb->rsp_list[0]);
@@ -1238,52 +1215,6 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
 
           xx--;
         }
-        if (is_avrcp_fallback) {
-        /* Restore Profile Version */
-            SDP_TRACE_ERROR("Restore Profile version");
-            switch(dut_profile_version) {
-                case AVRC_REV_1_6:
-                 SDP_TRACE_ERROR(" %s, DUT version 1.6, avrcp_fallback should not be true", __func__);
-                break;
-                case AVRC_REV_1_5:
-                    p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x05;
-                break;
-                case AVRC_REV_1_4:
-                    p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x04;
-                break;
-            }
-            is_avrcp_fallback = FALSE;
-        }
-        if (is_avrcp_browse_bit_reset) {
-            /* Restore Browsing bit */
-            SDP_TRACE_ERROR("Restore Browsing bit");
-            switch(dut_profile_version) {
-                case AVRC_REV_1_6:
-                 SDP_TRACE_ERROR(" %s, DUT version 1.6, browse_bit should not be true", __func__);
-                break;
-                case AVRC_REV_1_5:
-                case AVRC_REV_1_4:
-                    p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION]
-                                                |= AVRCP_BROWSE_SUPPORT_BITMASK;
-                break;
-            }
-            is_avrcp_browse_bit_reset = FALSE;
-        }
-        if (is_avrcp_cover_bit_reset) {
-            /* Restore Cover Art bit */
-            SDP_TRACE_ERROR("Restore Cover Art bit");
-            switch(dut_profile_version) {
-                case AVRC_REV_1_6:
-                 SDP_TRACE_ERROR(" %s, DUT version 1.6, cover_art_bit should not be true", __func__);
-                break;
-                case AVRC_REV_1_5:
-                case AVRC_REV_1_4:
-                    p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]
-                                                |= AVRCP_CA_SUPPORT_BITMASK;
-                break;
-            }
-            is_avrcp_cover_bit_reset = FALSE;
-        }
         if (is_hfp_fallback) {
             SDP_TRACE_ERROR("Restore HFP version to 1.6");
             /* Update HFP version back to 1.6 */
@@ -1292,58 +1223,13 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
         }
       }
     }
-    if (is_avrcp_fallback) {
-    /* Restore Profile Version */
-        SDP_TRACE_ERROR("Restore Profile version");
-        switch(dut_profile_version) {
-            case AVRC_REV_1_6:
-             SDP_TRACE_ERROR(" %s, DUT version 1.6, avrcp_fallback should not be true", __func__);
-            break;
-            case AVRC_REV_1_5:
-                p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x05;
-            break;
-            case AVRC_REV_1_4:
-                p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x04;
-            break;
-        }
-        is_avrcp_fallback = FALSE;
-    }
-    if (is_avrcp_browse_bit_reset) {
-        /* Restore Browsing bit */
-        SDP_TRACE_ERROR("Restore Browsing bit");
-        switch(dut_profile_version) {
-            case AVRC_REV_1_6:
-             SDP_TRACE_ERROR(" %s, DUT version 1.6, browse_bit should not be true", __func__);
-            break;
-            case AVRC_REV_1_5:
-            case AVRC_REV_1_4:
-                p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION]
-                                            |= AVRCP_BROWSE_SUPPORT_BITMASK;
-            break;
-        }
-        is_avrcp_browse_bit_reset = FALSE;
-    }
-    if (is_avrcp_cover_bit_reset) {
-        /* Restore Cover Art bit */
-        SDP_TRACE_ERROR("Restore Cover Art bit");
-        switch(dut_profile_version) {
-            case AVRC_REV_1_6:
-             SDP_TRACE_ERROR(" %s, DUT version 1.6, cover_art_bit should not be true", __func__);
-            break;
-            case AVRC_REV_1_5:
-            case AVRC_REV_1_4:
-                p_attr->value_ptr[AVRCP_SUPPORTED_FEATURES_POSITION-1]
-                                            |= AVRCP_CA_SUPPORT_BITMASK;
-            break;
-        }
-        is_avrcp_cover_bit_reset = FALSE;
-    }
     if (is_hfp_fallback) {
         SDP_TRACE_ERROR("Restore HFP version to 1.6");
         /* Update HFP version back to 1.6 */
         p_attr->value_ptr[PROFILE_VERSION_POSITION] = 0x06;
         is_hfp_fallback = FALSE;
     }
+
     /* Go back and put the type and length into the buffer */
     if (p_ccb->cont_info.last_attr_seq_desc_sent == false) {
       seq_len = sdpu_get_attrib_seq_len(p_rec, &attr_seq_sav);
@@ -1409,7 +1295,8 @@ static void process_service_search_attr_req(tCONN_CB* p_ccb, uint16_t trans_num,
     /* Get the total list length for requested uid and attribute sequence */
     p_ccb->list_len = sdpu_get_list_len(&uid_seq, &attr_seq_sav) + 3;
     /* Get the length of blacklisted attributes to be updated if device is blacklisted */
-    p_ccb->bl_update_len = sdp_update_pbap_blacklist_len(p_ccb, &attr_seq_sav, &uid_seq);
+    p_ccb->bl_update_len = sdpu_is_pbap_0102_enabled() ?
+        sdp_update_pbap_blacklist_len(p_ccb, &attr_seq_sav, &uid_seq) : 0 ;
     SDP_TRACE_DEBUG("%s p_ccb->list_len = %d bl_update_len = %d",__func__,
         p_ccb->list_len, p_ccb->bl_update_len);
 
@@ -1516,13 +1403,13 @@ static bool is_device_blacklisted_for_pbap (RawAddress remote_address, bool chec
 ***************************************************************************************/
 static bool check_remote_pbap_version_102(RawAddress remote_addr) {
   bool entry_found = FALSE;
-  struct pce_entry entry;
+  struct dynamic_upgrade_entry entry;
   FILE *fp = fopen(PCE_PEER_VERSION_CONF_FILE, "r+b");
   if (!fp) {
     APPL_TRACE_ERROR("%s unable to open PBAP PCE Conf file for read: error: (%s)",\
                                                       __func__, strerror(errno));
   } else {
-    while (fread(&entry, sizeof(pce_entry), 1, fp) != 0)
+    while (fread(&entry, sizeof(dynamic_upgrade_entry), 1, fp) != 0)
     {
       APPL_TRACE_DEBUG("Entry: addr = %x:%x:%x, ver = 0x%x rebonded: %c",\
               entry.addr[0], entry.addr[1], entry.addr[2], entry.ver, entry.rebonded);
@@ -1545,7 +1432,7 @@ static bool check_remote_pbap_version_102(RawAddress remote_addr) {
 **
 ** Description     Updates the blacklist length to be updated from the SDP response
 **
-** Returns         void
+** Returns         returns the length of blacklisted attributes.
 **
 ***************************************************************************************/
 static uint16_t sdp_update_pbap_blacklist_len(tCONN_CB* p_ccb, tSDP_ATTR_SEQ* attr_seq,
@@ -1566,7 +1453,7 @@ static uint16_t sdp_update_pbap_blacklist_len(tCONN_CB* p_ccb, tSDP_ATTR_SEQ* at
     SDP_TRACE_DEBUG("%s pts running= %d", __func__, pts_property);
     running_pts = true;
   }
-  SDP_TRACE_DEBUG("%s remote BD Addr : %s is_pbap_102_supported : %d "
+  SDP_TRACE_DEBUG("%s remote BD Addr : %s is_pbap_102_supported = %d "
       "is_pbap_1_1__blacklisted = %d is_pbap_1_2__blacklisted = %d "
       "running_pts = %d", __func__,
       p_ccb->device_address.ToString().c_str(), is_pbap_102_supported,
@@ -1587,30 +1474,42 @@ static uint16_t sdp_update_pbap_blacklist_len(tCONN_CB* p_ccb, tSDP_ATTR_SEQ* at
       if ((attr.id == ATTR_ID_SERVICE_CLASS_ID_LIST) &&
           (((attr.value_ptr[1] << 8) | (attr.value_ptr[2])) == UUID_SERVCLASS_PBAP_PSE)) {
         // PBAP PSE Record
+        p_rec = sdp_upgrade_pse_record(p_rec, p_ccb->device_address);
         SDP_TRACE_DEBUG("%s: response has PBAP PSE record for BL device", __func__);
+
+        int att_index;
+        bool l2cap_psm_len_included = false, supp_attr_len_included = false;
         for (xx = p_ccb->cont_info.next_attr_index; xx < attr_seq->num_attr; xx++) {
-          if (attr_seq->attr_entry[xx].start == attr_seq->attr_entry[xx].end) {
-            SDP_TRACE_DEBUG("%s start and end match for xx = %d", __func__, xx);
-            if (attr_seq->attr_entry[xx].start == ATTR_ID_GOEP_L2CAP_PSM) {
+          SDP_TRACE_DEBUG("%s: xx = %d attr_seq->num_attr = %d, "
+              "attr_seq->attr_entry[xx].start = %d , attr_seq->attr_entry[xx].end = %d",
+              __func__, xx, attr_seq->num_attr, attr_seq->attr_entry[xx].start,
+              attr_seq->attr_entry[xx].end);
+
+          for (att_index = 0; att_index < p_rec->num_attributes; att_index++) {
+            tSDP_ATTRIBUTE cur_attr = p_rec->attribute[att_index];
+            if (cur_attr.id == ATTR_ID_GOEP_L2CAP_PSM
+                && !l2cap_psm_len_included
+                &&  cur_attr.id >= attr_seq->attr_entry[xx].start
+                &&  cur_attr.id <= attr_seq->attr_entry[xx].end) {
+              l2cap_psm_len_included = true;
               p_ccb->bl_update_len += PBAP_GOEP_L2CAP_PSM_LEN;
               SDP_TRACE_ERROR("%s: ATTR_ID_GOEP_L2CAP_PSM requested,"
                   " need to change length by %d", __func__,
                   p_ccb->bl_update_len);
-            } else if (attr_seq->attr_entry[xx].start ==
-              ATTR_ID_PBAP_SUPPORTED_FEATURES) {
+            } else if (cur_attr.id == ATTR_ID_PBAP_SUPPORTED_FEATURES
+                &&  !supp_attr_len_included
+                &&  cur_attr.id >= attr_seq->attr_entry[xx].start
+                &&  cur_attr.id <= attr_seq->attr_entry[xx].end) {
+              supp_attr_len_included = true;
               p_ccb->bl_update_len += PBAP_SUPP_FEA_LEN;
               SDP_TRACE_DEBUG("%s: ATTR_ID_PBAP_SUPPORTED_FEATURES requested,"
                   " need to change length by %d", __func__,
                   p_ccb->bl_update_len);
             }
-          } else {
-            p_ccb->bl_update_len = PBAP_GOEP_L2CAP_PSM_LEN +
-                PBAP_SUPP_FEA_LEN;
-            SDP_TRACE_DEBUG("%s: All attributes requested"
-                " need to change length by %d", __func__,
-                p_ccb->bl_update_len);
           }
+          if (p_ccb->bl_update_len == PBAP_1_2_BL_LEN) break;
         }
+        break;
       }
     }
   }
@@ -1709,21 +1608,25 @@ static tSDP_RECORD *sdp_upgrade_pse_record(tSDP_RECORD * p_rec,
 ***************************************************************************************/
 void update_pce_entry_after_cancelling_bonding(RawAddress remote_addr) {
   SDP_TRACE_DEBUG("%s", __func__);
-  struct pce_entry entry;
+  struct dynamic_upgrade_entry entry;
   FILE *fp = fopen(PCE_PEER_VERSION_CONF_FILE, "r+b");
   if (!fp) {
     APPL_TRACE_ERROR("%s unable to open PBAP PCE Conf file for read: error: (%s)",\
                                                       __func__, strerror(errno));
   } else {
+    int size_read = 0;
     while (fread(&entry, sizeof(entry), 1, fp) != 0)
     {
+      size_read += sizeof(entry);
       APPL_TRACE_DEBUG("Entry: addr = %x:%x:%x, ver = 0x%x",\
               entry.addr[0], entry.addr[1], entry.addr[2], entry.ver);
       if(!memcmp(&remote_addr, entry.addr, 3))
       {
-        APPL_TRACE_DEBUG("remote bd address matched, rebonded = %c", entry.rebonded);
-        if (entry.rebonded == 'N') {
-            fseek(fp, -(sizeof(pce_entry)), SEEK_CUR);
+        long entry_size = sizeof(dynamic_upgrade_entry);
+        APPL_TRACE_DEBUG("remote bd address matched, rebonded = %c,"
+            " entry_size = %ld, size_read = %d", entry.rebonded, entry_size, size_read);
+        if (entry.rebonded == 'N' && entry_size <= size_read) {
+            fseek(fp, -(entry_size), SEEK_CUR);
             entry.rebonded = 'Y';
             fwrite(&entry, sizeof(entry), 1, fp);
         }
@@ -1752,11 +1655,23 @@ void update_pce_entry_after_cancelling_bonding(RawAddress remote_addr) {
 void check_and_store_pce_profile_version(tSDP_DISC_REC* p_sdp_rec) {
   FILE *fp;
   bool has_entry = FALSE;
-  struct pce_entry entry;
-  uint16_t peer_pce_version;
+  struct dynamic_upgrade_entry entry;
+  uint16_t peer_pce_version = 0;
 
   RawAddress remote_addr = p_sdp_rec->remote_bd_addr;
   SDP_FindProfileVersionInRec(p_sdp_rec, UUID_SERVCLASS_PHONE_ACCESS, &peer_pce_version);
+  if (peer_pce_version != 0) {
+    APPL_TRACE_DEBUG("%s: peer_pce_version : 0x%x", __func__, peer_pce_version);
+    if (btif_config_set_uint16(remote_addr.ToString().c_str(),
+                      PBAP_PCE_VERSION_CONFIG_KEY,
+                      peer_pce_version)) {
+      btif_config_save();
+    } else {
+      APPL_TRACE_WARNING("%s: Failed to store  peer_pce_version for %s",
+                   __func__, remote_addr.ToString().c_str());
+    }
+  }
+
   bool is_pbap_102_blacklisted = is_device_blacklisted_for_pbap(remote_addr, true);
   APPL_TRACE_DEBUG("%s remote BD Addr: %s peer pce version: %x is_pbap_102_blacklisted = %d",
       __func__, remote_addr.ToString().c_str(), peer_pce_version, is_pbap_102_blacklisted);
@@ -1785,10 +1700,11 @@ void check_and_store_pce_profile_version(tSDP_DISC_REC* p_sdp_rec) {
             (peer_pce_version >= PBAP_1_2 && entry.ver < PBAP_1_2)) {
           APPL_TRACE_DEBUG("%s: Remote PBAP version is downgraded/Upgraded", __func__);
           // update file pce entry with older version and rebonded = 'N'
-          fseek(fp, -(sizeof(pce_entry)), SEEK_CUR);
+          long entry_size = sizeof(dynamic_upgrade_entry);
+          fseek(fp, -(entry_size), SEEK_CUR);
           entry.ver = peer_pce_version;
           entry.rebonded = 'N';
-          fwrite(&entry, sizeof(pce_entry), 1, fp);
+          fwrite(&entry, sizeof(dynamic_upgrade_entry), 1, fp);
         }
         APPL_TRACE_DEBUG("Entry already present, break");
         break;
@@ -1816,6 +1732,240 @@ void check_and_store_pce_profile_version(tSDP_DISC_REC* p_sdp_rec) {
       fclose(fp);
     }
   }
+}
+
+/*************************************************************************************
+**
+** Function        check_remote_map_version_104
+**
+** Description     checks if remote supports MAP 1.4
+**
+** Returns         true/false depending on remote MAP version support found in file.
+**                 Returns false if 1.4 entry is stored but device is not re-paired with
+**                 remote.
+**                 Returns true if 1.4 entry is stored and device is re-paired with
+**                 remote.
+**
+***************************************************************************************/
+static bool check_remote_map_version_104(RawAddress remote_addr) {
+  bool entry_found = FALSE;
+  struct dynamic_upgrade_entry entry;
+  FILE *fp = fopen(MCE_PEER_VERSION_CONF_FILE, "r+b");
+  if (!fp) {
+    APPL_TRACE_ERROR("%s unable to open MCE Conf file for read: reason: (%s)",\
+                                                      __func__, strerror(errno));
+  } else {
+    while (fread(&entry, sizeof(dynamic_upgrade_entry), 1, fp) != 0)
+    {
+      APPL_TRACE_DEBUG("Entry: addr = %x:%x:%x, ver = 0x%x rebonded: %c",\
+              entry.addr[0], entry.addr[1], entry.addr[2], entry.ver, entry.rebonded);
+      if(!memcmp(&remote_addr, entry.addr, 3))
+      {
+          entry_found = (entry.rebonded == 'Y' && entry.ver >= MAP_1_4)? TRUE : FALSE;
+          APPL_TRACE_DEBUG("remote bd address matched, isRebonded=%c entry_found = %d",
+                  entry.rebonded, entry_found);
+          break;
+      }
+    }
+    fclose(fp);
+  }
+  return entry_found;
+}
+
+/*********************************************************************
+ ** Function : check_and_store_mce_profile_version
+ **
+ **  Description :
+ **    This function checks remote MAP profile version. If remote supports
+ **    MAP 1.4, entry will be added to database for this remote.
+ **    address.
+ **    Entry Format: [version, BD_ADDRESS, rebonded]
+ **    Version: Remote MAP Profile Version
+ **    BD_ADDRESS: Bluetooth Address of the remote.
+ **    rebonded: either 'N'/'Y'.
+ **              N - When entry is created.
+ **              Y - When device is rebonded
+ **
+ ********************************************************************/
+void check_and_store_mce_profile_version(tSDP_DISC_REC* m_sdp_rec) {
+  APPL_TRACE_WARNING("%s", __func__);
+  FILE *fp;
+  bool has_entry = FALSE;
+  struct dynamic_upgrade_entry entry;
+  uint16_t peer_mce_version = 0;
+  RawAddress remote_addr = m_sdp_rec->remote_bd_addr;
+  SDP_FindProfileVersionInRec(m_sdp_rec, UUID_SERVCLASS_MAP_PROFILE, &peer_mce_version);
+  if (peer_mce_version != 0) {
+    APPL_TRACE_WARNING("%s: peer_mce_version : 0x%x", __func__,peer_mce_version);
+    if (btif_config_set_uint16(remote_addr.ToString().c_str(),
+                      MAP_MCE_VERSION_CONFIG_KEY,
+                      peer_mce_version)) {
+      btif_config_save();
+    } else {
+      APPL_TRACE_WARNING("%s: Failed to store  peer_mce_version for %s",
+                   __func__, remote_addr.ToString().c_str());
+    }
+  } else {
+    APPL_TRACE_WARNING("%s: peer_mce_version invalid : 0x%x", __func__, peer_mce_version);
+  }
+  fp = fopen(MCE_PEER_VERSION_CONF_FILE, "r+b");
+  if (!fp)
+  {
+    APPL_TRACE_ERROR("%s No existing MAP MCE Conf file for read reason: (%s)",\
+                                                      __func__, strerror(errno));
+  }
+  else
+  {
+    while (fread(&entry, sizeof(entry), 1, fp) != 0)
+    {
+      APPL_TRACE_DEBUG("%s: Entry: addr = %x:%x:%x, ver = 0x%x",\
+              __func__, entry.addr[0], entry.addr[1], entry.addr[2], entry.ver);
+      if(!memcmp(&remote_addr, entry.addr, 3))
+      {
+        has_entry = TRUE;
+        // Remote MAP Version Downgraded from 1.4 to some older version
+        if ((peer_mce_version < MAP_1_4 && entry.ver >= MAP_1_4) ||
+            (peer_mce_version >= MAP_1_4 && entry.ver < MAP_1_4)) {
+          APPL_TRACE_DEBUG("%s: Remote MAP version is downgraded/Upgraded", __func__);
+          // update file mce entry with older version and rebonded = 'N'
+          long entry_size = sizeof(dynamic_upgrade_entry);
+          fseek(fp, -(entry_size), SEEK_CUR);
+          entry.ver = peer_mce_version;
+          entry.rebonded = 'N';
+          fwrite(&entry, sizeof(dynamic_upgrade_entry), 1, fp);
+        }
+        APPL_TRACE_DEBUG("Entry already present, break");
+        break;
+      }
+    }
+    fclose(fp);
+  }
+  // Store MCE MAP version
+  if (has_entry == FALSE && peer_mce_version >= MAP_1_4)
+  {
+    fp = fopen(MCE_PEER_VERSION_CONF_FILE, "ab");
+    if (!fp)
+    {
+      APPL_TRACE_ERROR("%s Unable to open/create MCE Conf file for write: reason: (%s)",\
+                                                        __func__, strerror(errno));
+    }
+    else
+    {
+      entry.ver = peer_mce_version;
+      entry.rebonded = 'N';
+      memcpy(entry.addr, &remote_addr, 3);
+      APPL_TRACE_DEBUG("MCE MAP version to store = 0x%x rebonded = %c",
+              peer_mce_version, entry.rebonded);
+      fwrite(&entry, sizeof(entry), 1, fp);
+      fclose(fp);
+    }
+  } else {
+      APPL_TRACE_DEBUG(" %s MCE MAP version not stored =>> 0x%x has_entry = %d",
+                __func__,peer_mce_version, has_entry);
+  }
+}
+
+/*************************************************************************************
+**
+** Function        update_mce_entry_after_cancelling_bonding
+**
+** Description     Update MCE 1.4 entry by setting rebonded to true
+**
+***************************************************************************************/
+void update_mce_entry_after_cancelling_bonding(RawAddress remote_addr) {
+  SDP_TRACE_DEBUG("%s", __func__);
+  struct dynamic_upgrade_entry entry;
+  FILE *fp = fopen(MCE_PEER_VERSION_CONF_FILE, "r+b");
+  if (!fp) {
+    APPL_TRACE_ERROR("%s unable to open MAP MCE Conf file for read: Reason: (%s)",\
+                                                      __func__, strerror(errno));
+  } else {
+    int size_read = 0;
+    long entry_size = sizeof(dynamic_upgrade_entry);
+    while (fread(&entry, sizeof(entry), 1, fp) != 0)
+    {
+      size_read += sizeof(entry);
+      APPL_TRACE_DEBUG("Entry: addr = %x:%x:%x, ver = 0x%x",\
+              entry.addr[0], entry.addr[1], entry.addr[2], entry.ver);
+      if(!memcmp(&remote_addr, entry.addr, 3))
+      {
+        APPL_TRACE_DEBUG("remote bd address matched, rebonded = %c,"
+            " entry_size = %ld, size_read = %d", entry.rebonded, entry_size, size_read);
+        if (entry.rebonded == 'N' && entry_size <= size_read) {
+            fseek(fp, -(entry_size), SEEK_CUR);
+            entry.rebonded = 'Y';
+            fwrite(&entry, sizeof(entry), 1, fp);
+        }
+        break;
+      }
+    }
+    fclose(fp);
+  }
+}
+
+/*************************************************************************************
+**
+** Function        sdp_upgrade_map_mse_record
+**
+** Description     updates map record to map 1.4 record if remote supports map 1.4
+**
+** Returns         the address of updated record
+**
+***************************************************************************************/
+static tSDP_RECORD *sdp_upgrade_mse_record(tSDP_RECORD * p_rec,
+        RawAddress remote_address) {
+  static bool is_map_104_supported = FALSE;
+  APPL_TRACE_ERROR("%s ",__func__);
+  tSDP_ATTRIBUTE attr = p_rec->attribute[1];
+  if (!((attr.id == ATTR_ID_SERVICE_CLASS_ID_LIST) &&
+      (((attr.value_ptr[1] << 8) | (attr.value_ptr[2])) == UUID_SERVCLASS_MESSAGE_ACCESS))) {
+    // Not a MAP MSE Record
+    return p_rec;
+  }
+  /* Check if remote supports MAP 1.4 */
+  is_map_104_supported = check_remote_map_version_104(remote_address);
+  bool running_pts = false;
+  char pts_property[6];
+  osi_property_get(SDP_ENABLE_PTS_MAP, pts_property, "false");
+  if (!strncmp("true", pts_property, 4)) {
+    SDP_TRACE_DEBUG("%s pts running= %s", __func__, pts_property);
+    running_pts = true;
+  }
+  APPL_TRACE_ERROR("%s remote BD Addr : %s is_map_104_supported : %d running_pts = %d",
+      __func__,remote_address.ToString().c_str(),is_map_104_supported,running_pts);
+
+  if (!is_map_104_supported && !running_pts) {
+    // Send 1.2 SDP Record
+    APPL_TRACE_ERROR("%s Send MAP 1.2, remote not supporting map 1.4  ",__func__);
+    return p_rec;
+  }
+  tSDP_ATTRIBUTE  *p_attr = &p_rec->attribute[0];
+  static tSDP_RECORD map_104_sdp_rec;
+  bool status = true;
+  uint8_t temp[4];
+  uint8_t* p_temp = temp;
+  memset(&map_104_sdp_rec, 0, sizeof(tSDP_RECORD));
+  uint16_t map_0104 = MAP_1_4; // Profile version
+  uint32_t supported_features = 0x603ff; // MAP 1.4 Features
+  for (int j = 0; j < p_rec->num_attributes; j++, p_attr++) {
+    SDP_AddAttributeToRecord (&map_104_sdp_rec, p_attr->id,
+    p_attr->type, p_attr->len, p_attr->value_ptr);
+  }
+  /* Add in the Bluetooth Profile Descriptor List */
+  status &= SDP_AddProfileDescriptorListToRecord(
+    &map_104_sdp_rec, UUID_SERVCLASS_MAP_PROFILE, map_0104);
+  /* Add MAP 1.4 supported features  */
+  UINT32_TO_BE_STREAM(p_temp, supported_features);
+  status &= SDP_AddAttributeToRecord(&map_104_sdp_rec,  ATTR_ID_MAP_SUPPORTED_FEATURES,
+    UINT_DESC_TYPE, (uint32_t)4, temp);
+  SDP_TRACE_DEBUG("%s update supported_features %x, version : %x"
+    ,__func__, supported_features,map_0104);
+  if (!status) {
+    SDP_TRACE_ERROR("%s: FAILED", __func__);
+    return p_rec;
+  }
+  SDP_TRACE_ERROR("%s: Success changed", __func__);
+  return &map_104_sdp_rec;
 }
 
 #endif /* SDP_SERVER_ENABLED == TRUE */

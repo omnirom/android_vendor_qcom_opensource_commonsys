@@ -105,7 +105,8 @@ void avdt_delay_report_timer_timeout(void* data) {
  ******************************************************************************/
 void AVDT_Register(tAVDT_REG* p_reg, tAVDT_CTRL_CBACK* p_cback) {
   /* register PSM with L2CAP */
-  L2CA_Register(AVDT_PSM, (tL2CAP_APPL_INFO*)&avdt_l2c_appl);
+  L2CA_Register(AVDT_PSM, (tL2CAP_APPL_INFO*)&avdt_l2c_appl,
+                true /* enable_snoop */);
 
   /* set security level */
   BTM_SetSecurityLevel(true, "", BTM_SEC_SERVICE_AVDTP, p_reg->sec_mask,
@@ -1325,7 +1326,7 @@ void AVDT_UpdateLinkPktType(uint8_t hdl, uint16_t packet_type) {
 
         p_scb = avdt_scb_by_hdl(hdl);
         if (p_scb != NULL)
-                p_ccb = avdt_scb_by_hdl(hdl)->p_ccb;
+                p_ccb = p_scb->p_ccb;
         if (p_ccb != NULL)
                 p_acl_cb = btm_bda_to_acl(p_ccb->peer_addr, BT_TRANSPORT_BR_EDR);
         if (p_acl_cb != NULL)
@@ -1344,4 +1345,26 @@ void AVDT_UpdateLinkPktType(uint8_t hdl, uint16_t packet_type) {
 void AVDT_AssociateScb(uint8_t hdl, const RawAddress& bd_addr) {
   AVDT_TRACE_DEBUG("%s: hdl: %d remote_bda: %s", __func__, hdl, bd_addr.ToString().c_str());
   avdt_associate_scb(hdl,bd_addr);
+}
+
+/*******************************************************************************
+ *
+ * Function         AVDT_GetPeerSeid
+ *
+ * Description      Get the seid of associated peer sep.
+ *
+ * Returns          uint8_t
+ *
+ ******************************************************************************/
+uint8_t AVDT_GetPeerSeid(uint8_t handle) {
+  tAVDT_SCB* p_scb;
+  uint8_t peer_seid = 0;
+
+  p_scb = avdt_scb_by_hdl(handle);
+  if (p_scb != NULL && p_scb->in_use) {
+    peer_seid = p_scb->peer_seid;
+  }
+
+  AVDT_TRACE_DEBUG("%s: handle=%d, seid=%d", __func__, handle, peer_seid);
+  return peer_seid;
 }

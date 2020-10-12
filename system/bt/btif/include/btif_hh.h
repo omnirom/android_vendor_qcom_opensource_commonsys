@@ -22,13 +22,18 @@
 #include <hardware/bluetooth.h>
 #include <hardware/bt_hh.h>
 #include <linux/version.h>
+#include <linux/uhid.h>
 #include <pthread.h>
 #include <stdint.h>
 #include "bta_hh_api.h"
 #include "btu.h"
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 18, 00))
-#include "osi/include/fixed_queue.h"
-#endif  //  (LINUX_VERSION_CODE > KERNEL_VERSION(3,18,00))
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
+  #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 18, 00))
+    #include "osi/include/fixed_queue.h"
+  #endif  //(LINUX_VERSION_CODE > KERNEL_VERSION(3,18,00))
+#else
+  #include "osi/include/fixed_queue.h"
+#endif  // OFF_TARGET_TEST_ENABLED
 
 /*******************************************************************************
  *  Constants & Macros
@@ -41,7 +46,6 @@
 #define BTIF_HH_KEYSTATE_MASK_NUMLOCK 0x01
 #define BTIF_HH_KEYSTATE_MASK_CAPSLOCK 0x02
 #define BTIF_HH_KEYSTATE_MASK_SCROLLLOCK 0x04
-#define BTIF_HH_OUTPUT_REPORT_SIZE       2
 
 #define BTIF_HH_MAX_POLLING_ATTEMPTS 10
 #define BTIF_HH_POLLING_SLEEP_DURATION_US 5000
@@ -72,12 +76,17 @@ typedef struct {
   pthread_t hh_poll_thread_id;
   uint8_t hh_keep_polling;
   alarm_t* vup_timer;
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 18, 00))
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
+  #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 18, 00))
+    fixed_queue_t* set_rpt_id_queue;
+    fixed_queue_t* get_rpt_id_queue;
+  #endif             //  (LINUX_VERSION_CODE > KERNEL_VERSION(3,18,00))
+#else
   fixed_queue_t* set_rpt_id_queue;
   fixed_queue_t* get_rpt_id_queue;
-#endif             //  (LINUX_VERSION_CODE > KERNEL_VERSION(3,18,00))
+#endif               //OFF_TARGET_TEST_ENABLED
   bool local_vup;  // Indicated locally initiated VUP
-  uint8_t last_output_rpt_data[BTIF_HH_OUTPUT_REPORT_SIZE];
+  uint8_t last_output_rpt_data[UHID_DATA_MAX];
 } btif_hh_device_t;
 
 /* Control block to maintain properties of devices */

@@ -1,12 +1,9 @@
 cc_defaults {
     name: "libbt-hci_defaults_qti",
-    owner: "qcom",
     defaults: ["fluoride_defaults_qti"],
     shared_libs: [
         "android.hardware.bluetooth@1.0",
         "libhidlbase",
-        "libhidltransport",
-        "libhwbinder",
     ],
 }
 
@@ -37,7 +34,8 @@ cc_library_static {
         "vendor/qcom/opensource/commonsys/system/bt/stack/include",
         "vendor/qcom/opensource/commonsys/system/bt/utils/include",
         "vendor/qcom/opensource/commonsys/system/bt/bta/include",
-        "system/libhwbinder/include",
+        "vendor/qcom/opensource/commonsys/system/bt/device/include",
+        "vendor/qcom/opensource/commonsys-intf/bluetooth/include",
     ],
 }
 
@@ -57,7 +55,8 @@ cc_test {
         "vendor/qcom/opensource/commonsys/system/bt/osi/test",
         "vendor/qcom/opensource/commonsys/system/bt/stack/include",
         "vendor/qcom/opensource/commonsys/system/bt/utils/include",
-        "system/libhwbinder/include",
+        "vendor/qcom/opensource/commonsys/system/bt/device/include",
+        "vendor/qcom/opensource/commonsys-intf/bluetooth/include",
     ],
     srcs: [
         "test/packet_fragmenter_test.cc",

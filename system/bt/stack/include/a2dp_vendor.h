@@ -191,12 +191,6 @@ bool A2DP_VendorAdjustCodec(uint8_t* p_codec_info);
 btav_a2dp_codec_index_t A2DP_VendorSourceCodecIndex(
     const uint8_t* p_codec_info);
 
-// Gets the A2DP vendor Source codec index for a given |p_codec_info|.
-// Returns the corresponding |btav_a2dp_codec_index_t| on success,
-// otherwise |BTAV_A2DP_CODEC_INDEX_MAX|.
-btav_a2dp_codec_index_t A2DP_VendorSinkCodecIndexAptx(
-    const uint8_t* p_codec_info);
-
 // Gets the A2DP vendor codec name for a given |codec_index|.
 const char* A2DP_VendorCodecIndexStr(btav_a2dp_codec_index_t codec_index);
 

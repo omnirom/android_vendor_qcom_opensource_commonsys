@@ -32,6 +32,7 @@
 #include <base/location.h>
 #include <base/logging.h>
 #include <base/threading/thread.h>
+#include <log/log.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,7 @@
 #include "btm_int.h"
 #include "btu.h"
 #include "device/include/controller.h"
+#include "hci_evt_length.h"
 #include "hci_layer.h"
 #include "hcimsgs.h"
 #include "btm_csb.h"
@@ -50,12 +52,18 @@
 #include "osi/include/log.h"
 #include "osi/include/osi.h"
 #include "device/include/device_iot_config.h"
+#include "stack_config.h"
 
-using tracked_objects::Location;
+using base::Location;
+
+#if (OFF_TARGET_TEST_ENABLED == TRUE)
+#define SIGKILL 9
+#endif
 
 extern void bte_main_disable(void);
 extern void btm_process_cancel_complete(uint8_t status, uint8_t mode);
 extern void btm_ble_test_command_complete(uint8_t* p);
+extern void smp_cancel_start_encryption_attempt();
 
 /******************************************************************************/
 /*            L O C A L    F U N C T I O N     P R O T O T Y P E S            */
@@ -72,7 +80,8 @@ static void btu_hcif_authentication_comp_evt(uint8_t* p);
 static void btu_hcif_rmt_name_request_comp_evt(uint8_t* p, uint16_t evt_len);
 static void btu_hcif_encryption_change_evt(uint8_t* p);
 static void btu_hcif_read_rmt_features_comp_evt(uint8_t* p);
-static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p);
+static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p,
+                                                    uint8_t evt_len);
 static void btu_hcif_read_rmt_version_comp_evt(uint8_t* p);
 static void btu_hcif_qos_setup_comp_evt(uint8_t* p);
 static void btu_hcif_flow_spec_comp_evt(uint8_t* p);
@@ -130,7 +139,7 @@ static void btu_ble_rc_param_req_evt(uint8_t* p);
 static void btu_ble_proc_enhanced_conn_cmpl(uint8_t* p, uint16_t evt_len);
 #endif
 
-static void do_in_hci_thread(const tracked_objects::Location& from_here,
+static void do_in_hci_thread(const base::Location& from_here,
                              const base::Closure& task) {
   base::MessageLoop* hci_message_loop = get_message_loop();
   if (!hci_message_loop || !hci_message_loop->task_runner().get()) {
@@ -158,6 +167,13 @@ void btu_hcif_process_event(UNUSED_ATTR uint8_t controller_id, BT_HDR* p_msg) {
   uint8_t ble_sub_code;
   STREAM_TO_UINT8(hci_evt_code, p);
   STREAM_TO_UINT8(hci_evt_len, p);
+
+  // validate event size
+  if (hci_evt_len < hci_event_parameters_minimum_length[hci_evt_code]) {
+    HCI_TRACE_WARNING("%s: evt:0x%2X, malformed event of size %hhd", __func__,
+                      hci_evt_code, hci_evt_len);
+    return;
+  }
 
   switch (hci_evt_code) {
     case HCI_INQUIRY_COMP_EVT:
@@ -197,7 +213,7 @@ void btu_hcif_process_event(UNUSED_ATTR uint8_t controller_id, BT_HDR* p_msg) {
       btu_hcif_read_rmt_features_comp_evt(p);
       break;
     case HCI_READ_RMT_EXT_FEATURES_COMP_EVT:
-      btu_hcif_read_rmt_ext_features_comp_evt(p);
+      btu_hcif_read_rmt_ext_features_comp_evt(p, hci_evt_len);
       break;
     case HCI_READ_RMT_VERSION_COMP_EVT:
       btu_hcif_read_rmt_version_comp_evt(p);
@@ -489,7 +505,7 @@ static void btu_hcif_command_status_evt_with_cb(uint8_t status, BT_HDR* command,
 /* This function is called to send commands to the Host Controller. |cb| is
  * called when command status event is called with error code, or when the
  * command complete event is received. */
-void btu_hcif_send_cmd_with_cb(const tracked_objects::Location& posted_from,
+void btu_hcif_send_cmd_with_cb(const Location& posted_from,
                                uint16_t opcode, uint8_t* params,
                                uint8_t params_len, hci_cmd_cb cb) {
   BT_HDR* p = (BT_HDR*)osi_malloc(HCI_CMD_BUF_SIZE);
@@ -603,6 +619,13 @@ static void btu_hcif_connection_comp_evt(uint8_t* p) {
 
   handle = HCID_GET_HANDLE(handle);
 
+  if (status != HCI_SUCCESS) {
+    HCI_TRACE_DEBUG(
+        "%s: Connection failed: status=%d, handle=%d, link_type=%d, "
+        "enc_mode=%d",
+        __func__, status, handle, link_type, enc_mode);
+  }
+
   if (link_type == HCI_LINK_TYPE_ACL) {
     btm_sec_connected(bda, handle, status, enc_mode);
 
@@ -674,6 +697,13 @@ static void btu_hcif_disconnection_comp_evt(uint8_t* p) {
 
   handle = HCID_GET_HANDLE(handle);
 
+  if ((reason != HCI_ERR_CONN_CAUSE_LOCAL_HOST) &&
+      (reason != HCI_ERR_PEER_USER)) {
+    /* Uncommon disconnection reasons */
+    HCI_TRACE_DEBUG("%s: Got Disconn Complete Event: reason=%d, handle=%d",
+                    __func__, reason, handle);
+  }
+
 #if (BTM_SCO_INCLUDED == TRUE)
   /* If L2CAP doesn't know about it, send it to SCO */
   if (!l2c_link_hci_disc_comp(handle, reason)) btm_sco_removed(handle, reason);
@@ -727,6 +757,48 @@ static void btu_hcif_rmt_name_request_comp_evt(uint8_t* p, uint16_t evt_len) {
   btm_sec_rmt_name_request_complete(&bd_addr, p, status);
 }
 
+constexpr uint8_t MIN_KEY_SIZE = 7;
+
+static void read_encryption_key_size_complete_after_encryption_change(
+    uint8_t status, uint16_t handle, uint8_t key_size) {
+  if (status == HCI_ERR_INSUFFCIENT_SECURITY) {
+    /* If remote device stop the encryption before we call "Read Encryption Key
+     * Size", we might receive Insufficient Security, which means that link is
+     * no longer encrypted. */
+    HCI_TRACE_WARNING("%s encryption stopped on link: 0x%02x", __func__,
+                      handle);
+    return;
+  }
+
+  if (status != HCI_SUCCESS) {
+    HCI_TRACE_WARNING("%s: disconnecting, status: 0x%02x", __func__, status);
+    btsnd_hcic_disconnect(handle, HCI_ERR_PEER_USER);
+    return;
+  }
+
+  if (stack_config_get_interface()->get_pts_bredr_invalid_encryption_keysize() > 0) {
+    key_size = stack_config_get_interface()->get_pts_bredr_invalid_encryption_keysize();
+    HCI_TRACE_ERROR(
+        "%s key_size set for pts test, handle: 0x%02x, key_size: "
+        "%d",
+        __func__, handle, key_size);
+  }
+
+  if (key_size < MIN_KEY_SIZE) {
+    android_errorWriteLog(0x534e4554, "124301137");
+    HCI_TRACE_ERROR(
+        "%s encryption key too short, disconnecting. handle: 0x%02x, key_size: "
+        "%d",
+        __func__, handle, key_size);
+
+    btsnd_hcic_disconnect(handle, HCI_ERR_HOST_REJECT_SECURITY);
+    return;
+  }
+
+  // good key size - succeed
+  btm_acl_encrypt_change(handle, status, 1 /* enable */);
+  btm_sec_encrypt_change(handle, status, 1 /* enable */);
+}
 /*******************************************************************************
  *
  * Function         btu_hcif_encryption_change_evt
@@ -745,8 +817,20 @@ static void btu_hcif_encryption_change_evt(uint8_t* p) {
   STREAM_TO_UINT16(handle, p);
   STREAM_TO_UINT8(encr_enable, p);
 
-  btm_acl_encrypt_change(handle, status, encr_enable);
-  btm_sec_encrypt_change(handle, status, encr_enable);
+  if (status == HCI_ERR_CONNECTION_TOUT) {
+    smp_cancel_start_encryption_attempt();
+    return;
+  }
+
+  if (status != HCI_SUCCESS || encr_enable == 0 ||
+      BTM_IsBleConnection(handle)) {
+    btm_acl_encrypt_change(handle, status, encr_enable);
+    btm_sec_encrypt_change(handle, status, encr_enable);
+  } else {
+    btsnd_hcic_read_encryption_key_size(
+        handle,
+        base::Bind(&read_encryption_key_size_complete_after_encryption_change));
+  }
 }
 
 /*******************************************************************************
@@ -771,7 +855,8 @@ static void btu_hcif_read_rmt_features_comp_evt(uint8_t* p) {
  * Returns          void
  *
  ******************************************************************************/
-static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p) {
+static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p,
+                                                    uint8_t evt_len) {
   uint8_t* p_cur = p;
   uint8_t status;
   uint16_t handle;
@@ -779,7 +864,7 @@ static void btu_hcif_read_rmt_ext_features_comp_evt(uint8_t* p) {
   STREAM_TO_UINT8(status, p_cur);
 
   if (status == HCI_SUCCESS)
-    btm_read_remote_ext_features_complete(p);
+    btm_read_remote_ext_features_complete(p, evt_len);
   else {
     STREAM_TO_UINT16(handle, p_cur);
     btm_read_remote_ext_features_failed(status, handle);
@@ -815,7 +900,7 @@ static void btu_hcif_qos_setup_comp_evt(uint8_t* p) {
 
   STREAM_TO_UINT8(status, p);
   STREAM_TO_UINT16(handle, p);
-  STREAM_TO_UINT8(flow.qos_flags, p);
+  STREAM_TO_UINT8(flow.qos_unused, p);
   STREAM_TO_UINT8(flow.service_type, p);
   STREAM_TO_UINT32(flow.token_rate, p);
   STREAM_TO_UINT32(flow.peak_bandwidth, p);
@@ -841,7 +926,7 @@ static void btu_hcif_flow_spec_comp_evt(uint8_t* p) {
 
   STREAM_TO_UINT8(status, p);
   STREAM_TO_UINT16(handle, p);
-  STREAM_TO_UINT8(flow.qos_flags, p);
+  STREAM_TO_UINT8(flow.qos_unused, p);
   STREAM_TO_UINT8(flow.flow_direction, p);
   STREAM_TO_UINT8(flow.service_type, p);
   STREAM_TO_UINT32(flow.token_rate, p);
@@ -976,18 +1061,6 @@ static void btu_hcif_hdl_command_complete(uint16_t opcode, uint8_t* p,
       break;
 
     /* BLE Commands sComplete*/
-    case HCI_BLE_ADD_WHITE_LIST:
-      btm_ble_add_2_white_list_complete(*p);
-      break;
-
-    case HCI_BLE_CLEAR_WHITE_LIST:
-      btm_ble_clear_white_list_complete(p, evt_len);
-      break;
-
-    case HCI_BLE_REMOVE_WHITE_LIST:
-      btm_ble_remove_from_white_list_complete(p, evt_len);
-      break;
-
     case HCI_BLE_RAND:
     case HCI_BLE_ENCRYPT:
       btm_ble_rand_enc_complete(p, opcode, (tBTM_RAND_ENC_CB*)p_cplt_cback);
@@ -1002,7 +1075,13 @@ static void btu_hcif_hdl_command_complete(uint16_t opcode, uint8_t* p,
       break;
 
     case HCI_BLE_CREATE_LL_CONN:
-      btm_ble_create_ll_conn_complete(*p);
+    case HCI_LE_EXTENDED_CREATE_CONNECTION:
+      // No command complete event for those commands according to spec
+      LOG(ERROR) << "No command complete expected, but received!";
+      break;
+
+    case HCI_BLE_CREATE_CONN_CANCEL:
+      btm_ble_create_conn_cancel_complete(p);
       break;
 
     case HCI_BLE_TRANSMITTER_TEST:
@@ -1129,7 +1208,7 @@ static void btu_hcif_hdl_command_status(uint16_t opcode, uint8_t status,
         }
       }
 #endif
-    /* Case Falls Through */
+      FALLTHROUGH_INTENDED; /* FALLTHROUGH */
 
     case HCI_HOLD_MODE:
     case HCI_SNIFF_MODE:
@@ -1199,6 +1278,15 @@ static void btu_hcif_hdl_command_status(uint16_t opcode, uint8_t status,
             btm_sec_auth_complete(BTM_INVALID_HCI_HANDLE, status);
             break;
 
+          case HCI_BLE_START_ENC:
+            // Race condition: disconnection happened right before we send
+            // "LE Encrypt", controller responds with no connection, we should
+            // cancel the encryption attempt, rather than unpair the device.
+            if (status == HCI_ERR_NO_CONNECTION) {
+              smp_cancel_start_encryption_attempt();
+            }
+            break;
+
           case HCI_SET_CONN_ENCRYPTION:
             /* Device refused to start encryption.  That should be treated as
              * encryption failure. */
@@ -1206,6 +1294,7 @@ static void btu_hcif_hdl_command_status(uint16_t opcode, uint8_t status,
             break;
 
           case HCI_BLE_CREATE_LL_CONN:
+          case HCI_LE_EXTENDED_CREATE_CONNECTION:
             btm_ble_create_ll_conn_complete(status);
             break;
 
@@ -1457,11 +1546,11 @@ static void btu_hcif_link_key_request_evt(uint8_t* p) {
  ******************************************************************************/
 static void btu_hcif_link_key_notification_evt(uint8_t* p) {
   RawAddress bda;
-  LINK_KEY key;
+  Octet16 key;
   uint8_t key_type;
 
   STREAM_TO_BDADDR(bda, p);
-  STREAM_TO_ARRAY16(key, p);
+  STREAM_TO_ARRAY16(key.data(), p);
   STREAM_TO_UINT8(key_type, p);
 
   btm_sec_link_key_notification(bda, key, key_type);
@@ -1539,8 +1628,8 @@ static void btu_hcif_read_clock_off_comp_evt(uint8_t* p) {
  ******************************************************************************/
 static void btu_hcif_conn_pkt_type_change_evt(uint8_t *p) {
   uint8_t status;
-  uint8_t handle;
-  uint8_t pkt_type;
+  uint16_t handle;
+  uint16_t pkt_type;
 
   STREAM_TO_UINT8(status, p);
 
@@ -1733,21 +1822,64 @@ static void btu_hcif_enhanced_flush_complete_evt(void) {
  * End of Simple Pairing Events
  **********************************************/
 
-/**********************************************
- * BLE Events
- **********************************************/
+static void read_encryption_key_size_complete_after_key_refresh(
+    uint8_t status, uint16_t handle, uint8_t key_size) {
+  if (status == HCI_ERR_INSUFFCIENT_SECURITY) {
+    /* If remote device stop the encryption before we call "Read Encryption Key
+     * Size", we might receive Insufficient Security, which means that link is
+     * no longer encrypted. */
+    HCI_TRACE_WARNING("%s encryption stopped on link: 0x%02x", __func__,
+                      handle);
+    return;
+  }
+
+  if (status != HCI_SUCCESS) {
+    HCI_TRACE_WARNING("%s: disconnecting, status: 0x%02x", __func__, status);
+    btsnd_hcic_disconnect(handle, HCI_ERR_PEER_USER);
+    return;
+  }
+
+  if (stack_config_get_interface()->get_pts_bredr_invalid_encryption_keysize() > 0) {
+    key_size = stack_config_get_interface()->get_pts_bredr_invalid_encryption_keysize();
+    HCI_TRACE_ERROR(
+        "%s key_size set for pts test, handle: 0x%02x, key_size: "
+        "%d",
+        __func__, handle, key_size);
+  }
+
+  if (key_size < MIN_KEY_SIZE) {
+    android_errorWriteLog(0x534e4554, "124301137");
+    HCI_TRACE_WARNING(
+        "%s encryption key too short, disconnecting. handle: 0x%02x, key_size: "
+        "%d",
+        __func__, handle, key_size);
+
+    btsnd_hcic_disconnect(handle, HCI_ERR_HOST_REJECT_SECURITY);
+    return;
+  }
+
+  btm_sec_encrypt_change(handle, status, 1 /* enc_enable */);
+}
+
 static void btu_hcif_encryption_key_refresh_cmpl_evt(uint8_t* p) {
   uint8_t status;
-  uint8_t enc_enable = 0;
   uint16_t handle;
 
   STREAM_TO_UINT8(status, p);
   STREAM_TO_UINT16(handle, p);
 
-  if (status == HCI_SUCCESS) enc_enable = 1;
-
-  btm_sec_encrypt_change(handle, status, enc_enable);
+  if (status != HCI_SUCCESS || BTM_IsBleConnection(handle)) {
+    btm_sec_encrypt_change(handle, status, (status == HCI_SUCCESS) ? 1 : 0);
+  } else {
+    btsnd_hcic_read_encryption_key_size(
+        handle,
+        base::Bind(&read_encryption_key_size_complete_after_key_refresh));
+  }
 }
+
+/**********************************************
+ * BLE Events
+ **********************************************/
 
 static void btu_ble_ll_conn_complete_evt(uint8_t* p, uint16_t evt_len) {
   btm_ble_conn_complete(p, evt_len, false);

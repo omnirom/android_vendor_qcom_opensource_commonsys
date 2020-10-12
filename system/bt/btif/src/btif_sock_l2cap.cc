@@ -91,6 +91,7 @@ static bt_status_t btSock_start_l2cap_server_l(l2cap_socket* sock);
 static std::mutex state_lock;
 
 l2cap_socket* socks = NULL;
+static uint32_t last_sock_id = 0;
 static uid_set_t* uid_set = NULL;
 static int pth = -1;
 
@@ -238,6 +239,9 @@ static void btsock_l2cap_free_l(l2cap_socket* sock) {
 
   while (packet_get_head_l(sock, &buf, NULL)) osi_free(buf);
 
+  APPL_TRACE_DEBUG("%s: fixed_chan=%d, channel=%d is_le_soc=%d handle=%d sock_id:%d is_server=%d",
+                     __func__, sock->fixed_chan, sock->channel, sock->is_le_coc, sock->handle,
+                     sock->id, sock->server);
   // lower-level close() should be idempotent... so let's call it and see...
   if (sock->is_le_coc) {
     // Only call if we are non server connections
@@ -246,6 +250,11 @@ static void btsock_l2cap_free_l(l2cap_socket* sock) {
     }
     if ((sock->channel >= 0) && (sock->server == true)) {
       BTA_JvFreeChannel(sock->channel, BTA_JV_CONN_TYPE_L2CAP_LE);
+      if (!sock->fixed_chan) {
+        APPL_TRACE_DEBUG("%s stopping L2CAP server channel %d", __func__,
+                         sock->channel);
+        BTA_JvL2capStopServer(sock->channel, sock->id);
+      }
     }
   } else {
     // Only call if we are non server connections
@@ -314,7 +323,7 @@ static l2cap_socket* btsock_l2cap_alloc_l(const char* name,
   sock->next = socks;
   sock->prev = NULL;
   if (socks) socks->prev = sock;
-  sock->id = (socks ? socks->id : 0) + 1;
+  sock->id = last_sock_id + 1;
   socks = sock;
   /* paranoia cap on: verify no ID duplicates due to overflow and fix as needed
    */
@@ -330,6 +339,7 @@ static l2cap_socket* btsock_l2cap_alloc_l(const char* name,
     if (!++sock->id) /* no zero IDs allowed */
       sock->id++;
   }
+  last_sock_id = sock->id;
   APPL_TRACE_DEBUG("SOCK_LIST: alloc(id = %d)", sock->id);
   return sock;
 

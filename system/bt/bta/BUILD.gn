@@ -50,6 +50,8 @@ static_library("bta") {
     "gatt/bta_gatts_api.cc",
     "gatt/bta_gatts_main.cc",
     "gatt/bta_gatts_utils.cc",
+    "gatt/database_builder.cc",
+    "gatt/database.cc",
     "hf_client/bta_hf_client_act.cc",
     "hf_client/bta_hf_client_api.cc",
     "hf_client/bta_hf_client_at.cc",
@@ -66,12 +68,6 @@ static_library("bta") {
     "hd/bta_hd_act.cc",
     "hd/bta_hd_api.cc",
     "hd/bta_hd_main.cc",
-    "hl/bta_hl_act.cc",
-    "hl/bta_hl_api.cc",
-    "hl/bta_hl_ci.cc",
-    "hl/bta_hl_main.cc",
-    "hl/bta_hl_sdp.cc",
-    "hl/bta_hl_utils.cc",
     "jv/bta_jv_act.cc",
     "jv/bta_jv_api.cc",
     "jv/bta_jv_cfg.cc",
@@ -91,6 +87,7 @@ static_library("bta") {
     "sys/bta_sys_conn.cc",
     "sys/bta_sys_main.cc",
     "sys/utl.cc",
+    "hearing_aid/hearing_aid.cc",
   ]
 
   include_dirs = [
@@ -100,19 +97,40 @@ static_library("bta") {
     "hd",
     "include",
     "sys",
+    "av",
+    "ag",
+    "gatt",
+    "//bta",
     "//",
     "//btcore/include",
     "//hci/include",
-    "//include",
+    "//third_party/bt/include",
     "//stack/include",
     "//stack/btm",
     "//udrv/include",
     "//utils/include",
     "//vnd/include",
+    "//internal_include",
+    "//device/include",
+    "//linux_include",
+    "//third_party/bluetooth_ext/system_bt_ext/bta/include",
+    "//third_party/bluetooth_ext/system_bt_ext",
+    "//stock_bt_include",
+    "//third_party/bluetooth_ext/vhal/include",
+    "//third_party/system/core/include",
+    "//third_party/libchrome/base",
+    "//third_party/bluetooth_ext/system_bt_ext/btif/include",
+    "//third_party/bluetooth-commonsys-intf/include",
+    "//third_party/bluetooth-internal/test/offtarget/stack",
   ]
 
   deps = [
-    "//third_party/libchrome:base"
+    "//third_party/libchrome:base",
+    "//third_party/bluetooth_ext/system_bt_ext:system_bt_ext_bta",
+    "//third_party/bluetooth_ext/system_bt_ext:system_bt_ext_device",
   ]
 
+  defines = [
+    "UNUSED(param)",
+  ]
 }

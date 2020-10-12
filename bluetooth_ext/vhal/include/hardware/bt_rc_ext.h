@@ -574,6 +574,7 @@ typedef void (* btrc_ctrl_change_path_callback)(RawAddress *bd_addr, uint8_t cou
 typedef void (* btrc_ctrl_set_browsed_player_callback )(
     RawAddress *bd_addr, uint8_t num_items, uint8_t depth);
 typedef void (* btrc_ctrl_set_addressed_player_callback)(RawAddress *bd_addr, uint8_t status);
+typedef void (*btrc_ctrl_available_player_changed_callback)(RawAddress* bd_addr);
 /** BT-RC Controller callback structure. */
 typedef struct {
     /** set to sizeof(BtRcCallbacks) */
@@ -594,6 +595,7 @@ typedef struct {
     btrc_ctrl_change_path_callback                              change_folder_path_cb;
     btrc_ctrl_set_browsed_player_callback                       set_browsed_player_cb;
     btrc_ctrl_set_addressed_player_callback                     set_addressed_player_cb;
+    btrc_ctrl_available_player_changed_callback                 available_player_changed_cb;
 } btrc_ctrl_callbacks_t;
 
 /** Represents the standard BT-RC AVRCP Controller interface. */

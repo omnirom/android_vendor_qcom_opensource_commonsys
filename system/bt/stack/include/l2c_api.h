@@ -326,7 +326,7 @@ typedef struct {
 
 } tL2CAP_ERTM_INFO;
 
-#define L2CA_REGISTER(a, b, c) L2CA_Register(a, (tL2CAP_APPL_INFO*)(b))
+#define L2CA_REGISTER(a, b, c) L2CA_Register(a, (tL2CAP_APPL_INFO*)(b), c)
 #define L2CA_DEREGISTER(a) L2CA_Deregister(a)
 #define L2CA_CONNECT_REQ(a, b, c) L2CA_ErtmConnectReq(a, b, c)
 #define L2CA_CONNECT_RSP(a, b, c, d, e, f) L2CA_ErtmConnectRsp(a, b, c, d, e, f)
@@ -360,7 +360,8 @@ typedef struct {
  *                  BTM_SetSecurityLevel().
  *
  ******************************************************************************/
-extern uint16_t L2CA_Register(uint16_t psm, tL2CAP_APPL_INFO* p_cb_info);
+extern uint16_t L2CA_Register(uint16_t psm, tL2CAP_APPL_INFO* p_cb_info,
+                              bool enable_snoop);
 
 /*******************************************************************************
  *
@@ -1246,6 +1247,10 @@ extern bool L2CA_CancelBleConnectReq(const RawAddress& rem_bda);
 extern bool L2CA_UpdateBleConnParams(const RawAddress& rem_bdRa,
                                      uint16_t min_int, uint16_t max_int,
                                      uint16_t latency, uint16_t timeout);
+extern bool L2CA_UpdateBleConnParams(const RawAddress& rem_bda,
+                                     uint16_t min_int, uint16_t max_int,
+                                     uint16_t latency, uint16_t timeout,
+                                     uint16_t min_ce_len, uint16_t max_ce_len);
 
 /*******************************************************************************
  *
@@ -1321,4 +1326,7 @@ extern void L2CA_SetMediaStreamChannel(uint16_t local_media_cid, bool status);
 *******************************************************************************/
 extern bool L2CA_isMediaChannel(uint16_t handle, uint16_t channel_id, bool is_local_cid);
 
+extern void L2CA_AdjustConnectionIntervals(uint16_t* min_interval,
+                                           uint16_t* max_interval,
+                                           uint16_t floor_interval);
 #endif /* L2C_API_H */

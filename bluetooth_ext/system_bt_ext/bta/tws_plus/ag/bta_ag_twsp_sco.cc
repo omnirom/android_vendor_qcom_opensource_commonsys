@@ -376,7 +376,13 @@ void bta_ag_twsp_sco_event(tBTA_AG_SCB* p_scb, uint8_t event) {
 
           /* If SCO was active on this scb, close it */
           if (p_scb == p_sco->p_curr_scb) {
-            p_sco->state = BTA_AG_SCO_SHUTTING_ST;
+            if (p_scb->svc_conn) {
+              p_sco->state = BTA_AG_SCO_SHUTTING_ST;
+            } else {
+              p_sco->state = BTA_AG_SCO_SHUTDOWN_ST;
+              p_scb->sco_idx = BTM_INVALID_SCO_INDEX;
+              p_sco->p_curr_scb = NULL;
+            }
           }
           break;
 

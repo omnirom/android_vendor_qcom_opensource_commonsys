@@ -41,25 +41,7 @@ class A2dpCodecConfigAptx : public A2dpCodecConfig {
       const tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params,
       bool* p_restart_input, bool* p_restart_output,
       bool* p_config_updated) override;
-      void debug_codec_dump(int fd) override;
-};
-
-class A2dpCodecConfigAptxSink : public A2dpCodecConfig {
- public:
-  A2dpCodecConfigAptxSink(btav_a2dp_codec_priority_t codec_priority);
-  virtual ~A2dpCodecConfigAptxSink();
-
-  bool init() override;
-  period_ms_t encoderIntervalMs() const override;
-  bool setCodecConfig(const uint8_t* p_peer_codec_info, bool is_capability,
-                      uint8_t* p_result_codec_config) override;
-
- private:
-  bool useRtpHeaderMarkerBit() const override;
-  bool updateEncoderUserConfig(
-      const tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params,
-      bool* p_restart_input, bool* p_restart_output,
-      bool* p_config_updated) override;
+  void debug_codec_dump(int fd) override;
 };
 
 // Checks whether the codec capabilities contain a valid A2DP aptX Source
@@ -68,13 +50,6 @@ class A2dpCodecConfigAptxSink : public A2dpCodecConfig {
 // Returns true if |p_codec_info| contains information about a valid aptX
 // codec, otherwise false.
 bool A2DP_IsVendorSourceCodecValidAptx(const uint8_t* p_codec_info);
-
-// Checks whether the codec capabilities contain a valid A2DP aptX Sink
-// codec.
-// NOTE: only codecs that are implemented are considered valid.
-// Returns true if |p_codec_info| contains information about a valid aptX
-// codec, otherwise false.
-bool A2DP_IsVendorSinkCodecValidAptx(const uint8_t* p_codec_info);
 
 // Checks whether the codec capabilities contain a valid peer A2DP aptX Sink
 // codec.
@@ -118,12 +93,6 @@ int A2DP_VendorGetTrackSampleRateAptx(const uint8_t* p_codec_info);
 // Returns the channel count on success, or -1 if |p_codec_info|
 // contains invalid codec information.
 int A2DP_VendorGetTrackChannelCountAptx(const uint8_t* p_codec_info);
-
-// Gets the channel count for the A2DP aptX codec.
-// |p_codec_info| is a pointer to the aptX codec_info to decode.
-// Returns the channel count on success, or -1 if |p_codec_info|
-// contains invalid codec information.
-int A2DP_VendorGetTrackChannelTypeAptx(const uint8_t * p_codec_info);
 
 // Gets the A2DP aptX audio data timestamp from an audio packet.
 // |p_codec_info| contains the codec information.
@@ -170,32 +139,8 @@ btav_a2dp_codec_index_t A2DP_VendorSourceCodecIndexAptx(
 // Gets the A2DP aptX Source codec name.
 const char* A2DP_VendorCodecIndexStrAptx(void);
 
-// Gets the A2DP aptX Sink codec name.
-const char* A2DP_VendorCodecIndexStrAptxSink(void);
-
 // Initializes A2DP aptX Source codec information into |tAVDT_CFG|
 // configuration entry pointed by |p_cfg|.
 bool A2DP_VendorInitCodecConfigAptx(tAVDT_CFG* p_cfg);
-
-// Initializes A2DP aptX Sink codec information into |tAVDT_CFG|
-// configuration entry pointed by |p_cfg|.
-bool A2DP_VendorInitCodecConfigAptxSink(tAVDT_CFG* p_cfg);
-
-// Checks whether an A2DP APTX Source codec for a peer Source device is
-// supported.
-// |p_codec_info| contains information about the codec capabilities of the
-// peer device.
-// Returns true if the A2DP APTX Source codec for a peer Source device is
-// supported, otherwise false.
-bool A2DP_IsVendorPeerSourceCodecSupportedAptx(
-    const uint8_t* p_codec_info);
-
-// Builds A2DP APTX Sink capability from APTX Source capability.
-// |p_src_cap| is the Source capability to use.
-// |p_pref_cfg| is the result Sink capability to store.
-// Returns |A2DP_SUCCESS| on success, otherwise the corresponding A2DP error
-// status code.
-tA2DP_STATUS A2DP_BuildSrc2SinkConfigAptx(const uint8_t* p_src_cap,
-    uint8_t* p_pref_cfg);
 
 #endif  // A2DP_VENDOR_APTX_H

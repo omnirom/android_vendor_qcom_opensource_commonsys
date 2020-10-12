@@ -32,6 +32,7 @@
 
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 
 #include "buffer_allocator.h"
 #include "hci_internals.h"
@@ -42,6 +43,8 @@
 #include "osi/include/properties.h"
 
 using base::Thread;
+
+#define SOCKET_GET_IF "/tmp/if_get_hci_sock"
 
 #define BTPROTO_HCI 1
 #define HCI_CHANNEL_USER 1
@@ -56,6 +59,11 @@ using base::Thread;
 #define MGMT_EV_COMMAND_COMP 0x0001
 #define MGMT_EV_SIZE_MAX 1024
 #define MGMT_EV_POLL_TIMEOUT 3000 /* 3000ms */
+
+#define BT_ACL_HDR_SIZE 4
+#define BT_SCO_HDR_SIZE 3
+#define BT_EVT_HDR_SIZE 2
+#define BT_CMD_HDR_SIZE 3
 
 struct sockaddr_hci {
   sa_family_t hci_family;
@@ -93,21 +101,20 @@ enum HciPacketType {
 };
 
 extern void initialization_complete();
-extern void hci_event_received(const tracked_objects::Location& from_here,
+extern void hci_event_received(const base::Location& from_here,
                                BT_HDR* packet);
 extern void acl_event_received(BT_HDR* packet);
 extern void sco_data_received(BT_HDR* packet);
 
 static int bt_vendor_fd = -1;
+static bool use_stream_sock = true;
 static int hci_interface;
 static int rfkill_en;
-static int wait_hcidev(void);
-static int rfkill(int block);
 
 int reader_thread_ctrl_fd = -1;
 Thread* reader_thread = NULL;
 
-void monitor_socket(int ctrl_fd, int fd) {
+void monitor_socket_packet(int ctrl_fd, int fd) {
   const allocator_t* buffer_allocator = buffer_allocator_get_interface();
   const size_t buf_size = 2000;
   uint8_t buf[buf_size];
@@ -166,46 +173,166 @@ void monitor_socket(int ctrl_fd, int fd) {
   }
 }
 
+static int do_read(int fd, unsigned char* buf, size_t len)
+{
+  int bytes_left = len, bytes_read = 0, read_offset = 0;
+  while(bytes_left > 0) {
+    bytes_read = read(fd, buf + read_offset, bytes_left);
+    if(bytes_read < 0) {
+       LOG(ERROR) << "read fail Error " << strerror(errno);
+      return -1;
+    } else if (bytes_read == 0) {
+      LOG(INFO) << " read returned 0, read bytes"  << (len-bytes_left) << " expected len" << len;
+      return (len - bytes_left);
+    } else {
+      if(bytes_read < bytes_left) {
+        bytes_left -= bytes_read;
+        read_offset += bytes_read;
+      } else {
+        break;
+      }
+    }
+  }
+
+  return len;
+}
+
+void monitor_socket_stream(int ctrl_fd, int fd) {
+  const allocator_t* buffer_allocator = buffer_allocator_get_interface();
+  const size_t buf_size = 2000;
+  uint8_t buf[buf_size];
+  unsigned int packet_length;
+  ssize_t len = read(fd, buf, 1);
+
+  while (len > 0) {
+    if (len == buf_size)
+      LOG(FATAL) << "This packet filled buffer, if it have continuation we "
+                    "don't know how to merge it, increase buffer size!";
+
+    uint8_t type = buf[0];
+
+    size_t packet_size = buf_size + BT_HDR_SIZE;
+    BT_HDR* packet =
+        reinterpret_cast<BT_HDR*>(buffer_allocator->alloc(packet_size));
+    packet->offset = 0;
+    packet->layer_specific = 0;
+    LOG(INFO) << "packet type:" << +type;
+    switch (type) {
+      case HCI_PACKET_TYPE_COMMAND:
+        len = do_read(fd,buf+1,BT_CMD_HDR_SIZE);
+        packet->event = MSG_HC_TO_STACK_HCI_EVT;
+        packet_length = buf[3];
+        packet->len = packet_length + BT_CMD_HDR_SIZE;
+        len = do_read(fd,buf+1,packet->len);
+        memcpy(packet->data, buf+1, packet->len);
+        hci_event_received(FROM_HERE, packet);
+        break;
+      case HCI_PACKET_TYPE_ACL_DATA:
+        len = do_read(fd,buf+1,BT_ACL_HDR_SIZE);
+        packet->event = MSG_HC_TO_STACK_HCI_ACL;
+        packet_length = (buf[4] << 8) + buf[3];
+        packet->len = packet_length + BT_ACL_HDR_SIZE;
+        LOG(INFO) << "total packet length to be read:" << packet->len;
+        LOG(INFO) << "packet_length:" << packet_length;
+        len = do_read(fd, buf+BT_ACL_HDR_SIZE+1, packet_length);
+        LOG(INFO) << "length of bytes read:" << +len;
+        memcpy(packet->data, buf+1, packet->len);
+        acl_event_received(packet);
+        break;
+      case HCI_PACKET_TYPE_SCO_DATA:
+        len = do_read(fd,buf+1,BT_SCO_HDR_SIZE);
+        packet->event = MSG_HC_TO_STACK_HCI_SCO;
+        packet_length = buf[3];
+        packet->len = packet_length + BT_CMD_HDR_SIZE;
+        len = do_read(fd,buf+1,packet->len);
+        memcpy(packet->data, buf+1, packet->len);
+        sco_data_received(packet);
+        break;
+      case HCI_PACKET_TYPE_EVENT:
+        len = do_read(fd,buf+1,BT_EVT_HDR_SIZE);
+        packet->event = MSG_HC_TO_STACK_HCI_EVT;
+        packet_length = buf[2];
+        packet->len = packet_length + BT_EVT_HDR_SIZE;
+        len = do_read(fd, buf+BT_EVT_HDR_SIZE+1, packet_length);
+        memcpy(packet->data, buf+1, packet->len);
+        hci_event_received(FROM_HERE, packet);
+        break;
+      default:
+        LOG(FATAL) << "Unexpected event type: " << +type;
+        break;
+    }
+
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(ctrl_fd, &fds);
+    FD_SET(fd, &fds);
+    int res = select(std::max(fd, ctrl_fd) + 1, &fds, NULL, NULL, NULL);
+    if (res <= 0) LOG(INFO) << "Nothing more to read";
+
+    if (FD_ISSET(ctrl_fd, &fds)) {
+      LOG(INFO) << "exitting";
+      return;
+    }
+    len = read(fd, buf, 1);
+  }
+}
+
 /* TODO: should thread the device waiting and return immedialty */
 void hci_initialize() {
   LOG(INFO) << __func__;
 
-  char prop_value[PROPERTY_VALUE_MAX];
-  osi_property_get("bluetooth.interface", prop_value, "0");
+  int fdGetSock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+  CHECK(fdGetSock >= 0) << "socket create error" << strerror(errno);
 
-  errno = 0;
-  if (memcmp(prop_value, "hci", 3))
-    hci_interface = strtol(prop_value, NULL, 10);
-  else
-    hci_interface = strtol(prop_value + 3, NULL, 10);
-  if (errno) hci_interface = 0;
+  struct sockaddr_un addr_get_sock;
+  memset(&addr_get_sock, 0, sizeof(struct sockaddr_un));
+  addr_get_sock.sun_family = AF_UNIX;
+  strncpy(addr_get_sock.sun_path, SOCKET_GET_IF, sizeof(addr_get_sock.sun_path) - 1);
 
-  LOG(INFO) << "Using interface hci" << +hci_interface;
-
-  osi_property_get("bluetooth.rfkill", prop_value, "1");
-
-  rfkill_en = atoi(prop_value);
-  if (rfkill_en) {
-    rfkill(0);
-  }
-
-  int fd = socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI);
-  CHECK(fd >= 0) << "socket create error" << strerror(errno);
-
-  bt_vendor_fd = fd;
-
-  if (wait_hcidev()) {
-    LOG(FATAL) << "HCI interface hci" << +hci_interface << " not found";
-  }
-
-  struct sockaddr_hci addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.hci_family = AF_BLUETOOTH;
-  addr.hci_dev = hci_interface;
-  addr.hci_channel = HCI_CHANNEL_USER;
-  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+  LOG(ERROR) << "Connect to socket: " << SOCKET_GET_IF;
+  if (connect(fdGetSock, (struct sockaddr*)&addr_get_sock, sizeof(addr_get_sock)) < 0) {
     LOG(FATAL) << "socket bind error " << strerror(errno);
   }
+
+  char c_str_sock_name[255];
+  int len = read(fdGetSock, c_str_sock_name, 255);
+  std::string socket_name (c_str_sock_name, len);
+  LOG(ERROR) << __func__ << ": sock_name " << socket_name;
+  close(fdGetSock);
+
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof(struct sockaddr_un));
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, socket_name.c_str(), sizeof(addr.sun_path) - 1);
+
+  /* Try to use STREAM type of socket */
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  CHECK(fd >= 0) << "socket create error" << strerror(errno);
+
+  LOG(ERROR) << "Connect to socket: " << socket_name;
+
+  if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    LOG(ERROR) << "socket bind error: " << strerror(errno) << ". Retry";
+    close(fd);
+
+    /* Try to use SEQPACKET type of socket */
+    use_stream_sock = false;
+
+    fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    CHECK(fd >= 0) << "socket create error" << strerror(errno);
+
+    LOG(ERROR) << "Connect to socket: " << socket_name;
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+      LOG(FATAL) << "socket bind error, abort" << strerror(errno);
+      close(fd);
+      return;
+    }
+
+  } else {
+    use_stream_sock = true;
+  }
+
+  bt_vendor_fd = fd;
 
   int sv[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
@@ -215,9 +342,14 @@ void hci_initialize() {
   reader_thread_ctrl_fd = sv[0];
   reader_thread = new Thread("hci_sock_reader");
   reader_thread->Start();
-  reader_thread->task_runner()->PostTask(
-      FROM_HERE, base::Bind(&monitor_socket, sv[1], bt_vendor_fd));
 
+  if (use_stream_sock) {
+    reader_thread->task_runner()->PostTask(
+        FROM_HERE, base::Bind(&monitor_socket_stream, sv[1], bt_vendor_fd));
+  } else {
+    reader_thread->task_runner()->PostTask(
+        FROM_HERE, base::Bind(&monitor_socket_packet, sv[1], bt_vendor_fd));
+  }
   LOG(INFO) << "HCI device ready";
   initialization_complete();
 }
@@ -242,7 +374,6 @@ void hci_close() {
     reader_thread = NULL;
   }
 
-  rfkill(1);
 }
 
 hci_transmit_status_t hci_transmit(BT_HDR* packet) {
@@ -280,13 +411,14 @@ hci_transmit_status_t hci_transmit(BT_HDR* packet) {
     LOG(ERROR) << "Should have send whole packet";
   }
 
-  if (ret == -1) { 
+  if (ret == -1) {
     status = HCI_TRANSMIT_DAEMON_DIED;
     LOG(FATAL) << strerror(errno);
   }
   return status;
 }
 
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
 static int wait_hcidev(void) {
   struct sockaddr_hci addr;
   struct pollfd fds[1];
@@ -401,6 +533,7 @@ static int rfkill(int block) {
   close(fd);
   return 0;
 }
+#endif
 
 int hci_open_firmware_log_file() { return INVALID_FD; }
 

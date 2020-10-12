@@ -278,6 +278,39 @@ final class Vendor {
         }
     }
 
+    void whitelistedPlayersChangedCallback(int[] types, byte[][] values) {
+        byte[] val = {0};
+        int type;
+
+        if (types.length <= 0) {
+            Log.e(TAG, "No properties to update");
+            return;
+        }
+
+        for (int j = 0; j < types.length; j++) {
+            type = types[j];
+            val = values[j];
+            Log.d(TAG, "Property type: " + type);
+            if (type == AbstractionLayer.BT_VENDOR_PROPERTY_WL_MEDIA_PLAYERS_LIST) {
+                int name_len = 0, pos = 0;
+                for (int i = 0; i < val.length; i++) {
+
+                    if (val[i] == 0) {
+                        name_len = i - pos;
+                    } else
+                        continue;
+
+                    byte[] buf = new byte[name_len];
+                    System.arraycopy(val, pos, buf, 0, name_len);
+                    String player_name = new String(buf,0,name_len);
+                    Log.d(TAG, " player_name :"  +  player_name);
+                    mService.updateWhitelistedMediaPlayers(player_name);
+                    pos += (name_len + 1);
+                }
+            }
+        }
+    }
+
     public String getSocName() {
         return socName;
     }
@@ -313,6 +346,10 @@ final class Vendor {
         return startClockSyncNative();
     }
 
+    public void informTimeoutToHidl() {
+        informTimeoutToHidlNative();
+    }
+
     private native void bredrcleanupNative();
     private native void bredrstartupNative();
     private native void initNative();
@@ -332,4 +369,5 @@ final class Vendor {
     private native boolean setClockSyncConfigNative(boolean enable, int mode, int adv_interval,
         int channel, int jitter, int offset);
     private native boolean startClockSyncNative();
+    private native void informTimeoutToHidlNative();
 }

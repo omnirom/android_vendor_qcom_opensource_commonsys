@@ -84,6 +84,10 @@
 #define BTA_AV_FAIL_GET_CAP \
   6 /* get capability failed due to no SEP availale on the peer  */
 #define BTA_AV_FAIL_UNSUPPORTED 7 /* Offload Start Rsp handling in open state */
+#define BTA_AV_SUCCESS_BR_HANDOFF 8 /* successful browse handoff operation */
+#define BTA_AV_FAIL_RECONFIG \
+  9  /* Fake reconfig has been failed, to retry reconfig one more time after
+      * start VSC exchanged */
 
 typedef uint8_t tBTA_AV_STATUS;
 
@@ -129,7 +133,7 @@ typedef uint8_t tBTA_AV_HNDL;
 
 /* maximum number of streams created: 1 for audio, 1 for video */
 #ifndef BTA_AV_NUM_STRS
-#define BTA_AV_NUM_STRS 2
+#define BTA_AV_NUM_STRS 5
 #endif
 
 #ifndef BTA_AV_MAX_A2DP_MTU
@@ -484,6 +488,13 @@ typedef struct {
   tBTA_AV_LATENCY sink_delay;
 } tBTA_AV_DELAY_RPT;
 
+/* data associated with BTA_AV_OFFLOAD_START_RSP*/
+typedef struct {
+  tBTA_AV_HNDL hndl;
+  tBTA_AV_STATUS status;
+  uint8_t stream_start;
+} tBTA_AV_OFFLOAD_RSP;
+
 /* union of data associated with AV callback */
 typedef union {
   tBTA_AV_CHNL chnl;
@@ -512,6 +523,7 @@ typedef union {
   tBTA_AV_STATUS status;
   tBTA_AV_ROLE_CHANGED role_changed;
   tBTA_AV_DELAY_RPT delay_rpt;
+  tBTA_AV_OFFLOAD_RSP offload_rsp;
 } tBTA_AV;
 
 typedef struct {
@@ -532,7 +544,9 @@ typedef void(tBTA_AV_CBACK)(tBTA_AV_EVT event, tBTA_AV* p_data);
 typedef void(tBTA_AV_SINK_DATA_CBACK)(tBTA_AV_EVT event, tBTA_AV_MEDIA* p_data, RawAddress bd_addr);
 
 /* type for stream state machine action functions */
-typedef void (*tBTA_AV_ACT)(void* p_cb, void* p_data);
+struct tBTA_AV_SCB;
+union tBTA_AV_DATA;
+typedef void (*tBTA_AV_ACT)(tBTA_AV_SCB* p_cb, tBTA_AV_DATA* p_data);
 
 /* type for registering VDP */
 typedef void(tBTA_AV_REG)(tAVDT_CS* p_cs, char* p_service_name, void* p_data);
@@ -741,6 +755,20 @@ void BTA_AvUpdateEncoderMode(uint16_t enc_mode);
 
 /*******************************************************************************
  *
+ * Function          BTA_AvUpdateAptxData
+ *
+ * Description      Update extended Aptx Data to Soc via
+ *                          Vendor Specific Command.
+ *                          Sends Battery level, scan mode and
+ *                          ULL mode info to SoC
+ *
+ * Returns            void
+ *
+ ******************************************************************************/
+void BTA_AvUpdateAptxData(uint32_t data);
+
+
+/*******************************************************************************
  * Function         BTA_AvProtectReq
  *
  * Description      Send a content protection request.  This function can only
@@ -846,6 +874,17 @@ void BTA_AvOpenRc(tBTA_AV_HNDL handle);
  ******************************************************************************/
 void BTA_AvCloseRc(uint8_t rc_handle);
 
+ /*******************************************************************************
+  *
+  * Function         BTA_AvBrowseActive
+  *
+  * Description      Set Active Browse AVRCP
+  *
+  * Returns          void
+  ******************************************************************************/
+void BTA_AvBrowseActive(uint8_t rc_handle, const RawAddress& bd_addr,
+                        uint8_t browse_device_evt);
+
 /*******************************************************************************
  *
  * Function         BTA_AvMetaRsp
@@ -906,7 +945,11 @@ void BTA_AvOffloadStart(tBTA_AV_HNDL hndl, bool do_scrambling);
  ******************************************************************************/
 void BTA_AvOffloadStartRsp(tBTA_AV_HNDL hndl, tBTA_AV_STATUS status);
 void BTA_AvUpdateTWSDevice(bool isTwsDevice, tBTA_AV_HNDL hndl);
+void BTA_AVSetEarbudState(uint8_t state, tBTA_AV_HNDL hndl);
 void BTA_AVSetEarbudRole(uint8_t role, tBTA_AV_HNDL hndl);
 void bta_av_sniff_enable(bool policy_enable, const RawAddress& peer_addr);
 bool bta_av_get_is_peer_state_incoming(const RawAddress& bd_addr);
+void bta_av_refresh_accept_signalling_timer(const RawAddress &remote_bdaddr);
+tBTA_AV_SCB* bta_av_addr_to_scb(const RawAddress& bd_addr);
+void bta_av_fake_suspend_rsp(const RawAddress &remote_bdaddr);
 #endif /* BTA_AV_API_H */

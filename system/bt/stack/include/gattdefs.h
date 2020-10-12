@@ -28,7 +28,7 @@
 #define GATT_ILLEGAL_UUID 0
 
 /* GATT attribute types
-*/
+ */
 #define GATT_UUID_PRI_SERVICE 0x2800
 #define GATT_UUID_SEC_SERVICE 0x2801
 #define GATT_UUID_INCLUDE_SERVICE 0x2802
@@ -52,8 +52,12 @@
 #define GATT_UUID_EXT_RPT_REF_DESCR 0x2907
 #define GATT_UUID_RPT_REF_DESCR 0x2908
 
+/*  Client Characteristic Configuration bits */
+#define GATT_CHAR_CLIENT_CONFIG_NOTIFICATION 0x0001
+#define GATT_CHAR_CLIENT_CONFIG_INDICTION 0x0002
+
 /* GAP Profile Attributes
-*/
+ */
 #define GATT_UUID_GAP_DEVICE_NAME 0x2A00
 #define GATT_UUID_GAP_ICON 0x2A01
 #define GATT_UUID_GAP_PREF_CONN_PARAM 0x2A04
@@ -126,5 +130,10 @@
 /* Scan Parameter charatceristics */
 #define GATT_UUID_SCAN_INT_WINDOW 0x2A4F
 #define GATT_UUID_SCAN_REFRESH 0x2A31
+
+/* Native access notification characteristics */
+#define GATT_UUID_ACCEL_GYRO_STR       "00000001-2000-1000-8000-cec278b6b50a"
+#define GATT_UUID_MAG_DATA_STR         "00000002-2000-1000-8000-cec278b6b50a"
+#define GATT_UUID_PRESSURE_SENSOR_STR  "00000003-2000-1000-8000-cec278b6b50a"
 
 #endif

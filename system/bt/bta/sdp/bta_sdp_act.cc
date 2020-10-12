@@ -36,6 +36,7 @@
 #include "btm_int.h"
 #include "osi/include/allocator.h"
 #include "sdp_api.h"
+#include "stack/sdp/sdpint.h"
 #include "utl.h"
 
 /*****************************************************************************
@@ -50,6 +51,7 @@ static const Uuid UUID_MAP_MNS = Uuid::From16Bit(0x1133);
 static const Uuid UUID_SAP = Uuid::From16Bit(0x112D);
 
 extern void check_and_store_pce_profile_version(tSDP_DISC_REC* p_sdp_rec);
+extern void check_and_store_mce_profile_version(tSDP_DISC_REC* p_sdp_rec);
 
 static void bta_create_mns_sdp_record(bluetooth_sdp_record* record,
                                       tSDP_DISC_REC* p_rec) {
@@ -220,8 +222,10 @@ static void bta_create_ops_sdp_record(bluetooth_sdp_record* record,
     record->ops.hdr.rfcomm_channel_number = pe.params[0];
   }
 
+  bool opp_v1_enabled = sdpu_is_opp_0100_enabled();
+  APPL_TRACE_DEBUG("%s opp_v1_enabled %d ", __func__, opp_v1_enabled);
   p_attr = SDP_FindAttributeInRec(p_rec, ATTR_ID_GOEP_L2CAP_PSM);
-  if (p_attr != NULL) {
+  if (p_attr != NULL && (!opp_v1_enabled)) {
     record->ops.hdr.l2cap_psm = p_attr->attr_value.v.u16;
   }
   p_attr = SDP_FindAttributeInRec(p_rec, ATTR_ID_SUPPORTED_FORMATS_LIST);
@@ -365,6 +369,7 @@ static void bta_sdp_search_cback(uint16_t result, void* user_data) {
         bta_create_mas_sdp_record(&evt_data.records[count], p_rec);
       } else if (uuid == UUID_MAP_MNS) {
         APPL_TRACE_DEBUG("%s() - found MAP (MNS) uuid", __func__);
+        check_and_store_mce_profile_version(p_rec);
         bta_create_mns_sdp_record(&evt_data.records[count], p_rec);
       } else if (uuid == UUID_PBAP_PSE) {
         APPL_TRACE_DEBUG("%s() - found PBAP (PSE) uuid", __func__);

@@ -94,7 +94,7 @@ void bta_ag_process_at(tBTA_AG_AT_CB* p_cb, char* p_end) {
     /* start of argument is p + strlen matching command */
     p_arg = p_cb->p_cmd_buf + strlen(p_cb->p_at_tbl[idx].p_cmd);
     if (p_arg > p_end) {
-      (*p_cb->p_err_cback)(p_cb->p_user, false, NULL);
+      (*p_cb->p_err_cback)((tBTA_AG_SCB*)p_cb->p_user, false, NULL);
       android_errorWriteLog(0x534e4554, "112860487");
       return;
     }
@@ -135,24 +135,26 @@ void bta_ag_process_at(tBTA_AG_AT_CB* p_cb, char* p_end) {
         if (int_arg < (int16_t)p_cb->p_at_tbl[idx].min ||
             int_arg > (int16_t)p_cb->p_at_tbl[idx].max) {
           /* arg out of range; error */
-          (*p_cb->p_err_cback)(p_cb->p_user, false, NULL);
+          (*p_cb->p_err_cback)((tBTA_AG_SCB*)p_cb->p_user, false, NULL);
         } else {
-          (*p_cb->p_cmd_cback)(p_cb->p_user, p_cb->p_at_tbl[idx].command_id,
-                               arg_type, p_arg, p_end, int_arg);
+          (*p_cb->p_cmd_cback)((tBTA_AG_SCB*)p_cb->p_user,
+                               p_cb->p_at_tbl[idx].command_id, arg_type, p_arg,
+                               p_end, int_arg);
         }
       } else {
-        (*p_cb->p_cmd_cback)(p_cb->p_user, p_cb->p_at_tbl[idx].command_id,
-                             arg_type, p_arg, p_end, int_arg);
+        (*p_cb->p_cmd_cback)((tBTA_AG_SCB*)p_cb->p_user,
+                             p_cb->p_at_tbl[idx].command_id, arg_type, p_arg,
+                             p_end, int_arg);
       }
     }
     /* else error */
     else {
-      (*p_cb->p_err_cback)(p_cb->p_user, false, NULL);
+      (*p_cb->p_err_cback)((tBTA_AG_SCB*)p_cb->p_user, false, NULL);
     }
   }
   /* else no match call error callback */
   else {
-    (*p_cb->p_err_cback)(p_cb->p_user, true, p_cb->p_cmd_buf);
+    (*p_cb->p_err_cback)((tBTA_AG_SCB*)p_cb->p_user, true, p_cb->p_cmd_buf);
   }
 }
 
@@ -204,7 +206,7 @@ void bta_ag_at_parse(tBTA_AG_AT_CB* p_cb, char* p_buf, uint16_t len) {
       } else if (p_cb->p_cmd_buf[p_cb->cmd_pos] == 0x1A ||
                  p_cb->p_cmd_buf[p_cb->cmd_pos] == 0x1B) {
         p_cb->p_cmd_buf[++p_cb->cmd_pos] = 0;
-        (*p_cb->p_err_cback)(p_cb->p_user, true, p_cb->p_cmd_buf);
+        (*p_cb->p_err_cback)((tBTA_AG_SCB*)p_cb->p_user, true, p_cb->p_cmd_buf);
         p_cb->cmd_pos = 0;
       } else {
         ++p_cb->cmd_pos;

@@ -342,7 +342,7 @@ void rfc_mx_sm_sabme_wait_ua(tRFC_MCB* p_mcb, uint16_t event,
 
     case RFC_EVENT_DM:
       rfc_timer_stop(p_mcb);
-    /* Case falls through */
+      FALLTHROUGH;
 
     case RFC_MX_EVENT_CONF_IND: /* workaround: we don't support reconfig */
     case RFC_MX_EVENT_CONF_CNF: /* workaround: we don't support reconfig */
@@ -404,12 +404,18 @@ void rfc_mx_sm_state_wait_sabme(tRFC_MCB* p_mcb, uint16_t event, void* p_data) {
 
         p_mcb->state = RFC_MX_STATE_CONNECTED;
         p_mcb->peer_ready = true;
+        bool no_outgoing_ports_up = true;
         p_port = &rfc_cb.port.port[0];
         for (i = 0; i < MAX_RFC_PORTS; i++, p_port++) {
           if (p_port->rfc.p_mcb == p_mcb) {
+             no_outgoing_ports_up = false;
              PORT_StartCnf (p_mcb, RFCOMM_SUCCESS);
              break;
           }
+        }
+        if (no_outgoing_ports_up) {
+           RFCOMM_TRACE_EVENT("incoming mux connected start inact timer");
+           rfc_timer_start(p_mcb, RFC_MCB_INIT_PORT_INACT_TIMER);
         }
       }
       return;

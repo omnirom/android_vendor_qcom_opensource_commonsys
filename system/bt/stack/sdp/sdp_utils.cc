@@ -30,6 +30,9 @@
 #include "bt_common.h"
 #include "bt_types.h"
 
+#include "device/include/interop.h"
+#include "device/include/profile_config.h"
+
 #include "hcidefs.h"
 #include "hcimsgs.h"
 #include "l2cdefs.h"
@@ -577,7 +580,8 @@ uint8_t* sdpu_extract_attr_seq(uint8_t* p, uint16_t param_len,
  * Returns          void
  *
  ******************************************************************************/
-uint8_t* sdpu_get_len_from_type(uint8_t* p, uint8_t type, uint32_t* p_len) {
+uint8_t* sdpu_get_len_from_type(uint8_t* p, uint8_t* p_end, uint8_t type,
+                                uint32_t* p_len) {
   uint8_t u8;
   uint16_t u16;
   uint32_t u32;
@@ -599,14 +603,26 @@ uint8_t* sdpu_get_len_from_type(uint8_t* p, uint8_t type, uint32_t* p_len) {
       *p_len = 16;
       break;
     case SIZE_IN_NEXT_BYTE:
+      if (p + 1 > p_end) {
+        *p_len = 0;
+        return NULL;
+      }
       BE_STREAM_TO_UINT8(u8, p);
       *p_len = u8;
       break;
     case SIZE_IN_NEXT_WORD:
+      if (p + 2 > p_end) {
+        *p_len = 0;
+        return NULL;
+      }
       BE_STREAM_TO_UINT16(u16, p);
       *p_len = u16;
       break;
     case SIZE_IN_NEXT_LONG:
+      if (p + 4 > p_end) {
+        *p_len = 0;
+        return NULL;
+      }
       BE_STREAM_TO_UINT32(u32, p);
       *p_len = (uint16_t)u32;
       break;
@@ -1051,4 +1067,49 @@ void sdpu_clear_pend_ccb(uint16_t cid) {
     }
   }
   return;
+}
+
+/*******************************************************************************
+ *
+ * Function         sdpu_is_pbap_0102_enabled
+ *
+ * Description      This function checks local support for PBAP V1.2 is enabled or not
+ *
+ * Returns          returns true if supports, else false
+ *
+ ******************************************************************************/
+bool sdpu_is_pbap_0102_enabled() {
+  bool feature = profile_feature_fetch(PBAP_ID, PBAP_0102_SUPPORT);
+  SDP_TRACE_DEBUG("%s feature : %d", __func__, feature);
+  return feature;
+}
+
+/*******************************************************************************
+ *
+ * Function         sdpu_is_map_0104_enabled
+ *
+ * Description      This function checks local support for MAP V1.4 is enabled or not
+ *
+ * Returns          returns true if supports, else false
+ *
+ ******************************************************************************/
+bool sdpu_is_map_0104_enabled() {
+  bool feature = profile_feature_fetch(MAP_ID, MAP_0104_SUPPORT);
+  SDP_TRACE_DEBUG("%s feature : %d", __func__, feature);
+  return feature;
+}
+
+/*******************************************************************************
+ *
+ * Function         sdpu_is_opp_0100_enabled
+ *
+ * Description      This function checks local support for OPP V1 is enabled or not
+ *
+ * Returns          returns true if supports, else false
+ *
+ ******************************************************************************/
+bool sdpu_is_opp_0100_enabled() {
+  bool feature = profile_feature_fetch(OPP_ID, OPP_0100_SUPPORT);
+  SDP_TRACE_DEBUG("%s feature : %d", __func__, feature);
+  return feature;
 }

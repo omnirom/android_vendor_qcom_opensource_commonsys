@@ -32,33 +32,36 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <hardware/avrcp/avrcp.h>
 #include <hardware/bluetooth.h>
 #include <hardware/bt_av.h>
 #include <hardware/bt_gatt.h>
 #include <hardware/bt_hd.h>
 #include <hardware/bt_hf.h>
+#include <hardware/bt_hearing_aid.h>
 #include <hardware/bt_hf_client.h>
 #include <hardware/bt_hh.h>
-#include <hardware/bt_hl.h>
 #include <hardware/bt_mce.h>
 #include <hardware/bt_pan.h>
 #include <hardware/bt_rc_ext.h>
 #include <hardware/bt_sdp.h>
 #include <hardware/bt_sock.h>
-#ifdef WIPOWER_SUPPORTED
-#include <hardware/wipower.h>
+#if (SWB_ENABLED == TRUE)
+#include <hardware/vendor_hf.h>
 #endif
 #include <hardware/vendor.h>
 #include <hardware/vendor_socket.h>
 #include <hardware/bt_ba.h>
 #include <hardware/bt_vendor_rc.h>
 #include "bt_utils.h"
+#include "bta/include/bta_hearing_aid_api.h"
 #include "bta/include/bta_hf_client_api.h"
 #include "btif/include/btif_debug_btsnoop.h"
 #include "btif/include/btif_debug_conn.h"
 #include "btif_a2dp.h"
 #include "btif_hf.h"
 #include "btif_api.h"
+#include "btif_bqr.h"
 #include "btif_config.h"
 #include "device/include/controller.h"
 #include "btif_debug.h"
@@ -66,6 +69,7 @@
 #include "device/include/device_iot_config.h"
 #include "btsnoop.h"
 #include "btsnoop_mem.h"
+#include "common/address_obfuscator.h"
 #include "device/include/interop.h"
 #include "osi/include/alarm.h"
 #include "osi/include/allocation_tracker.h"
@@ -73,10 +77,11 @@
 #include "osi/include/metrics.h"
 #include "osi/include/osi.h"
 #include "osi/include/wakelock.h"
+#include "stack/gatt/connection_manager.h"
 #include "stack_manager.h"
 
-/* Test interface includes */
-#include "mca_api.h"
+
+using bluetooth::hearing_aid::HearingAidInterface;
 
 /*******************************************************************************
  *  Static variables
@@ -84,6 +89,7 @@
 
 bt_callbacks_t* bt_hal_cbacks = NULL;
 bool restricted_mode = false;
+bool single_user_mode = false;
 
 /*******************************************************************************
  *  Externs
@@ -102,8 +108,6 @@ extern btsock_interface_t* btif_sock_get_interface();
 extern bthh_interface_t* btif_hh_get_interface();
 /* hid device profile */
 extern bthd_interface_t* btif_hd_get_interface();
-/* health device profile */
-extern bthl_interface_t* btif_hl_get_interface();
 /*pan*/
 extern btpan_interface_t* btif_pan_get_interface();
 /*map client*/
@@ -117,16 +121,17 @@ extern btrc_interface_t* btif_rc_ctrl_get_interface();
 /*SDP search client*/
 extern btsdp_interface_t* btif_sdp_get_interface();
 
-#ifdef WIPOWER_SUPPORTED
-extern wipower_interface_t *get_wipower_interface();
-#endif
+/*Hearing Aid client*/
+extern HearingAidInterface* btif_hearing_aid_get_interface();
 
 /* List all test interface here */
-extern btmcap_test_interface_t* stack_mcap_get_interface();
 /* vendor  */
 extern btvendor_interface_t *btif_vendor_get_interface();
 /* vendor socket*/
 extern btvendor_interface_t *btif_vendor_socket_get_interface();
+#if (SWB_ENABLED == TRUE)
+extern btvendor_interface_t *btif_vendor_hf_get_interface();
+#endif
 /* broadcast transmitter */
 extern ba_transmitter_interface_t *btif_bat_get_interface();
 extern btrc_vendor_ctrl_interface_t *btif_rc_vendor_ctrl_get_interface();
@@ -149,8 +154,10 @@ static bool is_profile(const char* p1, const char* p2) {
  *
  ****************************************************************************/
 
-static int init(bt_callbacks_t* callbacks) {
-  LOG_INFO(LOG_TAG, "QTI OMR1 stack: %s", __func__);
+static int init(bt_callbacks_t* callbacks, bool start_restricted,
+                bool is_niap_mode, int config_compare_result) {
+  LOG_INFO(LOG_TAG, "QTI OMR1 stack: %s: start restricted = %d : single user = %d",
+                     __func__, start_restricted, is_niap_mode);
 
   if (interface_ready()) return BT_STATUS_DONE;
 
@@ -159,15 +166,16 @@ static int init(bt_callbacks_t* callbacks) {
 #endif
 
   bt_hal_cbacks = callbacks;
+  restricted_mode = start_restricted;
+  single_user_mode = is_niap_mode;
   stack_manager_get_interface()->init_stack();
   btif_debug_init();
   return BT_STATUS_SUCCESS;
 }
 
-static int enable(bool start_restricted) {
-  LOG_INFO(LOG_TAG, "QTI OMR1 stack: %s: start restricted = %d", __func__, start_restricted);
+static int enable() {
+  LOG_INFO(LOG_TAG, "QTI OMR1 stack: %s", __func__);
 
-  restricted_mode = start_restricted;
 
   if (!interface_ready()) return BT_STATUS_NOT_READY;
 
@@ -185,6 +193,7 @@ static int disable(void) {
 static void cleanup(void) { stack_manager_get_interface()->clean_up_stack(); }
 
 bool is_restricted_mode() { return restricted_mode; }
+bool is_single_user_mode() { return single_user_mode; }
 
 static int get_adapter_properties(void) {
   /* sanity check */
@@ -339,6 +348,9 @@ static void dump(int fd, const char** arguments) {
   wakelock_debug_dump(fd);
   osi_allocator_debug_dump(fd);
   alarm_debug_dump(fd);
+  HearingAid::DebugDump(fd);
+  connection_manager::dump(fd);
+  bluetooth::bqr::DebugDump(fd);
 #if (BTSNOOP_MEM == TRUE)
   btif_debug_btsnoop_dump(fd);
 #endif
@@ -375,9 +387,6 @@ static const void* get_profile_interface(const char* profile_id) {
   if (is_profile(profile_id, BT_PROFILE_HIDDEV_ID))
     return btif_hd_get_interface();
 
-  if (is_profile(profile_id, BT_PROFILE_HEALTH_ID))
-    return btif_hl_get_interface();
-
   if (is_profile(profile_id, BT_PROFILE_SDP_CLIENT_ID))
     return btif_sdp_get_interface();
 
@@ -398,17 +407,16 @@ static const void* get_profile_interface(const char* profile_id) {
 
   if (is_profile(profile_id, BT_PROFILE_VENDOR_SOCKET_ID))
     return btif_vendor_socket_get_interface();
-
-#ifdef WIPOWER_SUPPORTED
-  if (is_profile(profile_id, BT_PROFILE_WIPOWER_VENDOR_ID))
-    return get_wipower_interface();
+#if (SWB_ENABLED == TRUE)
+  if (is_profile(profile_id, BT_PROFILE_VENDOR_HF_ID))
+    return btif_vendor_hf_get_interface();
 #endif
-
-  if (is_profile(profile_id, BT_TEST_INTERFACE_MCAP_ID))
-    return stack_mcap_get_interface();
 
   if (is_profile(profile_id, BT_PROFILE_BAT_ID))
     return btif_bat_get_interface();
+
+  if (is_profile(profile_id, BT_PROFILE_HEARING_AID_ID))
+    return btif_hearing_aid_get_interface();
 
   return NULL;
 }
@@ -445,7 +453,6 @@ static int set_os_callouts(bt_os_callouts_t* callouts) {
   return BT_STATUS_SUCCESS;
 }
 
-// gghai: for JNI HAL compatibility
 static void dumpMetrics(std::string* output) {
   LOG_INFO(LOG_TAG, "%s", __func__);
 }
@@ -459,6 +466,16 @@ static bluetooth::avrcp::ServiceInterface* get_avrcp_service(void) {
   //return bluetooth::avrcp::AvrcpService::GetServiceInterface();
   LOG_ERROR(LOG_TAG, "%s: Avrcp Interface not available", __func__);
   return NULL;
+}
+
+static std::string obfuscate_address(const RawAddress& address) {
+  return bluetooth::common::AddressObfuscator::GetInstance()->Obfuscate(
+      address);
+}
+
+static int get_metric_id(const RawAddress& address) {
+  LOG_ERROR(LOG_TAG, "%s: not implemented", __func__);
+  return 0;
 }
 
 EXPORT_SYMBOL bt_interface_t bluetoothInterface = {
@@ -496,4 +513,6 @@ EXPORT_SYMBOL bt_interface_t bluetoothInterface = {
     interop_database_clear,
     interop_database_add,
     get_avrcp_service,
+    obfuscate_address,
+    get_metric_id,
 };

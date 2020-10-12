@@ -268,6 +268,11 @@ static tBTA_AG_SCB* bta_ag_scb_alloc(void) {
           alarm_new("bta_ag.scb_xsco_conn_collision_timer");
       /* set eSCO mSBC setting to T2 as the preferred */
       p_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T2;
+#if (SWB_ENABLED == TRUE)
+      /* set eSCO SWB setting to Q0 as the preferred */
+      p_scb->codec_swb_settings = BTA_AG_SCO_SWB_SETTINGS_Q0;
+      p_scb->is_swb_codec = false;
+#endif
       APPL_TRACE_DEBUG("bta_ag_scb_alloc %d", bta_ag_scb_to_idx(p_scb));
       break;
     }
@@ -431,6 +436,9 @@ bool bta_ag_other_scb_open(tBTA_AG_SCB* p_curr_scb) {
 
   for (i = 0; i < BTA_AG_MAX_NUM_CLIENTS; i++, p_scb++) {
     if (p_scb->in_use && p_scb != p_curr_scb &&
+#if (TWS_AG_ENABLED == TRUE)
+        p_scb != bta_ag_cb.sec_sm_scb && /*ignore sec tws scb*/
+#endif
         p_scb->state == BTA_AG_OPEN_ST) {
       return true;
     }
@@ -497,23 +505,26 @@ tBTA_AG_SCB* bta_ag_get_other_idle_scb(tBTA_AG_SCB* p_curr_scb) {
  ******************************************************************************/
 void bta_ag_collision_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status, uint8_t id,
                             UNUSED_ATTR uint8_t app_id,
-                            const RawAddress* peer_addr) {
+                            const RawAddress& peer_addr) {
+  uint16_t handle;
+  tBTA_AG_SCB* p_scb;
+
   /* Check if we have opening scb for the peer device. */
-  uint16_t handle = bta_ag_idx_by_bdaddr(peer_addr);
-  tBTA_AG_SCB* p_scb = bta_ag_scb_by_idx(handle);
+  handle = bta_ag_idx_by_bdaddr(&peer_addr);
+  p_scb = bta_ag_scb_by_idx(handle);
 
   if (p_scb && (p_scb->state == BTA_AG_OPENING_ST)) {
     if (id == BTA_ID_SYS) /* ACL collision */
     {
       LOG(WARNING) << __func__ << " AG found collision (ACL) for handle "
-                   << unsigned(handle) << " device " << *peer_addr;
+                   << unsigned(handle) << " device " << peer_addr;
     } else if (id == BTA_ID_AG) /* RFCOMM collision */
     {
       LOG(WARNING) << __func__ << " AG found collision (RFCOMM) for handle "
-                   << unsigned(handle) << " device " << *peer_addr;
+                   << unsigned(handle) << " device " << peer_addr;
     } else {
       LOG(WARNING) << __func__ << " AG found collision (UNKNOWN) for handle "
-                   << unsigned(handle) << " device " << *peer_addr;
+                   << unsigned(handle) << " device " << peer_addr;
     }
     bta_ag_sm_execute(p_scb, BTA_AG_COLLISION_EVT, NULL);
   }
@@ -697,7 +708,8 @@ void bta_ag_sm_execute(tBTA_AG_SCB* p_scb, uint16_t event,
       bta_ag_state_str(p_scb->state), p_scb->state, bta_ag_evt_str(event),
       event);
 
-  if (p_data != NULL) {
+  if (p_data != NULL &&
+        event == BTA_AG_API_RESULT_EVT) {
     APPL_TRACE_EVENT("result=%s(0x%02x)",
       bta_ag_res_str(p_data->api_result.result), p_data->api_result.result);
   }

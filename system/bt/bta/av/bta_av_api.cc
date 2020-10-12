@@ -67,6 +67,7 @@
 #include "bta_av_api.h"
 #include "bta_av_int.h"
 #include "bta_sys.h"
+#include "btif/include/btif_av.h"
 
 #include "osi/include/allocator.h"
 
@@ -347,6 +348,20 @@ void BTA_AvEnableMultiCast(bool state, tBTA_AV_HNDL handle)
 }
 
 #if (TWS_ENABLED == TRUE)
+#if (TWS_STATE_ENABLED == TRUE)
+void BTA_AVSetEarbudState(uint8_t state, tBTA_AV_HNDL handle)
+{
+  APPL_TRACE_DEBUG("%s",__func__);
+  tBTA_AV_TWS_SET_EARBUD_STATE *p_buf;
+
+  if ((p_buf = (tBTA_AV_TWS_SET_EARBUD_STATE *)osi_malloc(sizeof(tBTA_AV_TWS_SET_EARBUD_STATE))) != NULL) {
+    p_buf->hdr.event = BTA_AV_SET_EARBUD_STATE_EVT;
+    p_buf->hdr.layer_specific = handle;
+    p_buf->eb_state = state;
+    bta_sys_sendmsg(p_buf);
+  }
+}
+#endif
 void BTA_AVSetEarbudRole(uint8_t role, tBTA_AV_HNDL handle)
 {
   APPL_TRACE_DEBUG("%s",__func__);
@@ -443,6 +458,34 @@ void BTA_AvUpdateEncoderMode(uint16_t enc_mode) {
   bta_sys_sendmsg(p_buf);
 }
 
+void BTA_AvUpdateAptxData(uint32_t data) {
+  bool battery_info = (data & APTX_BATTERY_INFO);
+  uint16_t aptx_mode = (uint16_t)(data & APTX_MODE_MASK);
+  if(battery_info) {
+    tBTA_AV_APTX_DATA* p_buf_battery =
+        (tBTA_AV_APTX_DATA*)osi_malloc(sizeof(tBTA_AV_APTX_DATA));
+    p_buf_battery->type = 4;
+    p_buf_battery->data = (uint16_t)data;
+    p_buf_battery->hdr.event = BTA_AV_UPDATE_APTX_DATA_EVT;
+    bta_sys_sendmsg(p_buf_battery);
+  }
+  if(aptx_mode == APTX_ULL || aptx_mode == APTX_ULL_S) {
+    tBTA_AV_APTX_DATA* p_buf_ull =
+        (tBTA_AV_APTX_DATA*)osi_malloc(sizeof(tBTA_AV_APTX_DATA));
+    p_buf_ull->type = 3;
+    p_buf_ull->data = 1;
+    p_buf_ull->hdr.event = BTA_AV_UPDATE_APTX_DATA_EVT;
+    bta_sys_sendmsg(p_buf_ull);
+  }
+  if(aptx_mode == APTX_HQ || aptx_mode == APTX_LL) {
+    tBTA_AV_APTX_DATA* p_buf_ull =
+        (tBTA_AV_APTX_DATA*)osi_malloc(sizeof(tBTA_AV_APTX_DATA));
+    p_buf_ull->type = 3;
+    p_buf_ull->data = 0;
+    p_buf_ull->hdr.event = BTA_AV_UPDATE_APTX_DATA_EVT;
+    bta_sys_sendmsg(p_buf_ull);
+  }
+}
 
 /*******************************************************************************
  *
@@ -671,6 +714,27 @@ void BTA_AvCloseRc(uint8_t rc_handle) {
   bta_sys_sendmsg(p_buf);
 }
 
+ /*******************************************************************************
+  *
+  * Function         BTA_AvBrowseActive
+  *
+  * Description      Set Active Browse AVRCP
+  *
+  * Returns          void
+  ******************************************************************************/
+void BTA_AvBrowseActive(uint8_t rc_handle, const RawAddress& bd_addr,
+                        uint8_t browse_device_evt) {
+  APPL_TRACE_DEBUG("%s: Send Browse Active msg",__func__);
+  tBTA_AV_API_ACTIVE_BROWSE_RC* p_buf =
+      (tBTA_AV_API_ACTIVE_BROWSE_RC*)osi_malloc(sizeof(tBTA_AV_API_ACTIVE_BROWSE_RC));
+
+  p_buf->hdr.event = BTA_AV_BROWSE_ACTIVE_EVT;
+  p_buf->hdr.layer_specific = rc_handle;
+  p_buf->peer_addr = bd_addr;
+  p_buf->browse_device_evt = browse_device_evt;
+
+  bta_sys_sendmsg(p_buf);
+}
 /*******************************************************************************
  *
  * Function         BTA_AvMetaRsp

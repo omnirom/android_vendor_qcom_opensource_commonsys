@@ -37,6 +37,7 @@
 #include "osi/include/compat.h"
 #include "log/log.h"
 #include "bt_target.h"
+#include <inttypes.h>
 
 typedef struct {
   char* key;
@@ -167,6 +168,34 @@ int config_get_int(const config_t* config, const char* section, const char* key,
   return (*endptr == '\0') ? ret : def_value;
 }
 
+unsigned short int config_get_uint16(const config_t* config, const char* section, const char* key,
+                   uint16_t def_value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  entry_t* entry = entry_find(config, section, key);
+  if (!entry) return def_value;
+
+  char* endptr;
+  uint16_t ret = (uint16_t)strtoumax(entry->value, &endptr, 0);
+  return (*endptr == '\0') ? ret : def_value;
+}
+
+uint64_t config_get_uint64(const config_t* config, const char* section, const char* key,
+                   uint64_t def_value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  entry_t* entry = entry_find(config, section, key);
+  if (!entry) return def_value;
+
+  char* endptr;
+  uint64_t ret = (uint64_t)strtoull(entry->value, &endptr, 0);
+  return (*endptr == '\0') ? ret : def_value;
+}
+
 bool config_get_bool(const config_t* config, const char* section,
                      const char* key, bool def_value) {
   CHECK(config != NULL);
@@ -202,6 +231,28 @@ void config_set_int(config_t* config, const char* section, const char* key,
 
   char value_str[32] = {0};
   snprintf(value_str, sizeof(value_str), "%d", value);
+  config_set_string(config, section, key, value_str);
+}
+
+void config_set_uint16(config_t* config, const char* section, const char* key,
+                    uint16_t value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  char value_str[16] = {0};
+  snprintf(value_str, sizeof(value_str), "%u", value);
+  config_set_string(config, section, key, value_str);
+}
+
+void config_set_uint64(config_t* config, const char* section, const char* key,
+                    uint64_t value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  char value_str[64] = {0};
+  snprintf(value_str, sizeof(value_str), "%" PRIu64, value);
   config_set_string(config, section, key, value_str);
 }
 
@@ -449,13 +500,16 @@ bool config_save(const config_t* config, const char* filename) {
              directoryname, strerror(errno));
   }
 
+  if (syncfs(dir_fd) < 0) {
+    LOG_WARN(LOG_TAG, "%s unable to syncfs dir '%s': %s", __func__,
+             directoryname, strerror(errno));
+  }
+
   if (close(dir_fd) < 0) {
     LOG_ERROR(LOG_TAG, "%s unable to close dir '%s': %s", __func__,
               directoryname, strerror(errno));
     goto error;
   }
-  //sync() will ensure bt_config is saved to NVRAM and prevent file curruption
-  sync();
   osi_free(temp_filename);
   osi_free(temp_dirname);
   return true;
@@ -489,6 +543,8 @@ static bool config_parse(FILE* fp, config_t* config) {
 
   int line_num = 0;
   char line[1024] = { '\0' };
+  std::string line_new;
+  uint16_t MAX_BUF = 1023;
   char section[1024] = { '\0' };
   char comment[1024] = { '\0' };
   bool skip_entries = false;
@@ -496,15 +552,29 @@ static bool config_parse(FILE* fp, config_t* config) {
 
   while (fgets(line, sizeof(line), fp)) {
     char* line_ptr = trim(line);
-    ++line_num;
 
-    // ignore the line if the line length is more than 1023
-    if (strlen(line) == 1023){
-        int ch = '\0';
-        // read until next line or EOF
-        while(((ch = fgetc(fp)) != EOF) && (ch != '\n'));
-        continue;
+    /* fgets stops when either sizeof(line) = MAX_BUF (buffer_length - 1)character
+     * are read, the newline character is read, or the end-of-file is reached,
+     * whichever comes first.
+     * Hence check if sizeof(line) = MAX_BUF and the last character read is not an
+     * EOF and/or not '\n' then  Read remaining characters of a line.
+     */
+
+    if ((strlen(line) == MAX_BUF) && (line[MAX_BUF - 1] != EOF) &&
+        (line[MAX_BUF - 1] != '\n')) {
+      line_new = line_ptr;
+      while (fgets(line, sizeof(line), fp)) {
+        line_ptr = trim(line);
+        line_new.append(line_ptr);
+
+        //stop reading if '\n' or EOF is reached
+        if (strlen(line) == 0 || line[strlen(line) - 1] == '\n' ||
+            line[strlen(line) - 1] == EOF)
+          break;
+      }
+      line_ptr = &line_new[0];
     }
+    ++line_num;
 
     // Skip blanks.
     if (*line_ptr == '\0')

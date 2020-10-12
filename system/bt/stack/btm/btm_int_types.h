@@ -18,6 +18,7 @@
 #ifndef BTM_INT_TYPES_H
 #define BTM_INT_TYPES_H
 
+#include "btif/include/btif_bqr.h"
 #include "btm_api_types.h"
 #include "btm_ble_api_types.h"
 #include "btm_ble_int_types.h"
@@ -175,7 +176,7 @@ typedef struct {
   uint8_t le_supported_states[BTM_LE_SUPPORT_STATE_SIZE];
 
   tBTM_BLE_LOCAL_ID_KEYS id_keys;      /* local BLE ID keys */
-  BT_OCTET16 ble_encryption_key_value; /* BLE encryption key */
+  Octet16 ble_encryption_key_value;    /* BLE encryption key */
 
 #if (BTM_BLE_CONFORMANCE_TESTING == TRUE)
   bool no_disc_if_pair_fail;
@@ -440,12 +441,12 @@ typedef struct {
 
 /* LE Security information of device in Slave Role */
 typedef struct {
-  BT_OCTET16 irk;   /* peer diverified identity root */
-  BT_OCTET16 pltk;  /* peer long term key */
-  BT_OCTET16 pcsrk; /* peer SRK peer device used to secured sign local data  */
+  Octet16 irk;   /* peer diverified identity root */
+  Octet16 pltk;  /* peer long term key */
+  Octet16 pcsrk; /* peer SRK peer device used to secured sign local data  */
 
-  BT_OCTET16 lltk;  /* local long term key */
-  BT_OCTET16 lcsrk; /* local SRK peer device used to secured sign local data  */
+  Octet16 lltk;  /* local long term key */
+  Octet16 lcsrk; /* local SRK peer device used to secured sign local data  */
 
   BT_OCTET8 rand;        /* random vector for LTK generation */
   uint16_t ediv;         /* LTK diversifier of this slave device */
@@ -465,8 +466,8 @@ typedef struct {
   RawAddress pseudo_addr; /* LE pseudo address of the device if different from
                           device address  */
   tBLE_ADDR_TYPE ble_addr_type; /* LE device type: public or random address */
-  tBLE_ADDR_TYPE static_addr_type; /* static address type */
-  RawAddress static_addr;          /* static address */
+  tBLE_ADDR_TYPE identity_addr_type; /* identity address type */
+  RawAddress identity_addr;          /* identity address */
 
 #define BTM_WHITE_LIST_BIT 0x01
 #define BTM_RESOLVING_LIST_BIT 0x02
@@ -506,7 +507,7 @@ typedef struct {
   RawAddress peer_eb_addr;    /* Peer Earbud ADDR of dev if exists  */
 
   DEV_CLASS dev_class;     /* DEV_CLASS of the device            */
-  LINK_KEY link_key;       /* Device link key                    */
+  LinkKey link_key;        /* Device link key                    */
   uint8_t pin_code_length; /* Length of the pin_code used for paring */
 
 #define BTM_SEC_AUTHORIZED BTM_SEC_FLAG_AUTHORIZED       /* 0x01 */
@@ -527,6 +528,7 @@ typedef struct {
 #define BTM_SEC_LE_LINK_KEY_AUTHED 0x2000 /* pairing is done with MITM */
 #define BTM_SEC_16_DIGIT_PIN_AUTHED \
   0x4000 /* pairing is done with 16 digit pin */
+#define BTM_SEC_PAIRING_IN_PROGRESS 0x8000 /* pairing in progress */
 
   uint16_t sec_flags; /* Current device security state      */
 
@@ -602,6 +604,12 @@ typedef struct {
 
   tBTM_SEC_BLE ble;
   tBTM_LE_CONN_PRAMS conn_params;
+
+#define BTM_SEC_SMP_NO_PAIR_PENDING 0x00
+#define BTM_SEC_SMP_PAIR_PENDING 0x01
+#define BTM_SEC_LINK_KEY_TYPE_UNAUTH 0x02
+#define BTM_SEC_LINK_KEY_TYPE_AUTH   0x04
+  uint8_t sec_smp_pair_pending;
 
 #if (BTM_DISC_DURING_RS == TRUE)
 #define BTM_SEC_RS_NOT_PENDING 0 /* Role Switch not in progress */
@@ -783,6 +791,9 @@ typedef bool CONNECTION_TYPE;
 
 #endif /* (L2CAP_UCD_INCLUDED == TRUE) */
 
+// Bluetooth Quality Report - Report receiver
+typedef void(tBTM_BT_QUALITY_REPORT_RECEIVER)(uint8_t len, uint8_t* p_stream);
+
 /* Define a structure to hold all the BTM data
 */
 
@@ -884,6 +895,7 @@ typedef struct {
   bool is_paging;         /* true, if paging is in progess */
   bool is_inquiry;        /* true, if inquiry is in progess */
   bool is_wifi_connected; /* true, if wifi connected */
+  bool is_power_backoff;  /* true, if power_backoff is set */
   fixed_queue_t* page_queue;
   bool paging;
   bool discing;
@@ -891,6 +903,9 @@ typedef struct {
                                    tBTM_SEC_QUEUE_ENTRY format */
 
   char state_temp_buffer[BTM_STATE_BUFFER_SIZE];
+  // BQR Receiver
+  tBTM_BT_QUALITY_REPORT_RECEIVER* p_bqr_report_receiver;
+  bool rpa_gen_offload_enabled;
 } tBTM_CB;
 
 /* security action for L2CAP COC channels */

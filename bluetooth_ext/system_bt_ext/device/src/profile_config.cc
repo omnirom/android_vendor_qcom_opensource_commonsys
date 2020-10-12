@@ -45,7 +45,7 @@
 #if defined(OS_GENERIC)
 static const char *PROFILE_CONF_FILE_PATH = "bt_profile.conf";
 #else  // !defined(OS_GENERIC)
-static const char *PROFILE_CONF_BASE_FILE_PATH = "/etc/bluetooth/bt_profile.conf";
+static const char *PROFILE_CONF_BASE_FILE_PATH = "/system_ext/etc/bluetooth/bt_profile.conf";
 static const char *PROFILE_CONF_FILE_PATH = "/data/misc/bluedroid/bt_profile.conf";
 #endif  // defined(OS_GENERIC)
 
@@ -89,6 +89,10 @@ typedef struct {
 } map_feature_t;
 
 typedef struct {
+   char opp_0100_support[VALUE_MAX_LENGTH];
+} opp_feature_t;
+
+typedef struct {
   profile_t profile_id;
   char *version;
 
@@ -97,6 +101,7 @@ typedef struct {
     pbap_feature_t pbap_feature_entry;
     map_feature_t map_feature_entry;
     max_pow_feature_t max_pow_feature_entry;
+    opp_feature_t opp_feature_entry;
   } profile_feature_type;
 
 } profile_db_entry_t;
@@ -121,6 +126,7 @@ static const char* profile_name_string_(const profile_t profile_name)
     CASE_RETURN_STR(PBAP_ID)
     CASE_RETURN_STR(MAP_ID)
     CASE_RETURN_STR(MAX_POW_ID)
+    CASE_RETURN_STR(OPP_ID)
     CASE_RETURN_STR(END_OF_PROFILE_LIST)
   }
   return "UNKNOWN";
@@ -139,6 +145,7 @@ static const char* profile_feature_string_(const profile_info_t feature)
     CASE_RETURN_STR(BR_MAX_POW_SUPPORT)
     CASE_RETURN_STR(EDR_MAX_POW_SUPPORT)
     CASE_RETURN_STR(BLE_MAX_POW_SUPPORT)
+    CASE_RETURN_STR(OPP_0100_SUPPORT)
     CASE_RETURN_STR(END_OF_FEATURE_LIST)
   }
   return "UNKNOWN";
@@ -422,6 +429,21 @@ bool profile_feature_fetch(const profile_t profile, profile_info_t feature_name)
       }
     }
     break;
+    case OPP_ID:
+      switch (feature_name) {
+        case OPP_0100_SUPPORT:
+          if (strncasecmp("true", db_entry->profile_feature_type.opp_feature_entry.opp_0100_support,
+                  strlen("true")) == 0)
+            feature_set = true;
+            LOG_WARN(LOG_TAG, "profile_feature_fetch:opp_0100_support found %d" , feature_set);
+        break;
+        default:
+        {
+          LOG_WARN(LOG_TAG, "profile_feature_fetch:profile = %d , feature %d not found" ,
+              profile, feature_name);
+        }
+      }
+    break;
     default:
     {
       LOG_WARN(LOG_TAG,"%s() profile %d not found",__func__, profile);
@@ -595,6 +617,32 @@ static bool load_to_database(int profile_id, char *key, char *value)
           entry->profile_feature_type.max_pow_feature_entry.BLE_max_pow_feature = true;
           entry->profile_feature_type.max_pow_feature_entry.BLE_max_pow_support = BLE_pow;
 
+        }
+        break;
+        default:
+        {
+          LOG_WARN(LOG_TAG,"%s is invalid key %s", __func__, key);
+        }
+        break;
+      }
+      profile_database_add_(entry);
+    }
+    break;
+    case OPP_ID:
+    {
+      LOG_WARN(LOG_TAG, " OPP_ID: key :: %s, value :: %s", key, value);
+      entry = profile_entry_fetch(OPP_ID);
+      if (entry == NULL) {
+        entry = (profile_db_entry_t *)osi_calloc(sizeof(profile_db_entry_t));
+        entry->profile_id = (profile_t)profile_id;
+      }
+      switch (get_feature(key)) {
+        case OPP_0100_SUPPORT:
+        {
+          memset(&entry->profile_feature_type.opp_feature_entry.opp_0100_support,
+              '\0', VALUE_MAX_LENGTH);
+          memcpy(&entry->profile_feature_type.opp_feature_entry.opp_0100_support,
+              value, strlen(value));
         }
         break;
         default:

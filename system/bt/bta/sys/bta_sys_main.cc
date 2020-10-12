@@ -160,8 +160,12 @@ const uint8_t bta_sys_hw_stopping[][BTA_SYS_NUM_COLS] = {
 typedef const uint8_t (*tBTA_SYS_ST_TBL)[BTA_SYS_NUM_COLS];
 
 /* state table */
-const tBTA_SYS_ST_TBL bta_sys_st_tbl[] = {bta_sys_hw_off, bta_sys_hw_starting,
-                                          bta_sys_hw_on, bta_sys_hw_stopping};
+const tBTA_SYS_ST_TBL bta_sys_st_tbl[] = {
+    bta_sys_hw_off,      /* BTA_SYS_HW_OFF */
+    bta_sys_hw_starting, /* BTA_SYS_HW_STARTING */
+    bta_sys_hw_on,       /* BTA_SYS_HW_ON */
+    bta_sys_hw_stopping  /* BTA_SYS_HW_STOPPING */
+};
 
 /*******************************************************************************
  *
@@ -452,10 +456,10 @@ void bta_sys_event(BT_HDR* p_msg) {
   uint8_t id;
   bool freebuf = true;
 
-  APPL_TRACE_EVENT("%s: Event 0x%x", __func__, p_msg->event);
-
   /* get subsystem id from event */
   id = (uint8_t)(p_msg->event >> 8);
+
+  APPL_TRACE_EVENT("%s: Event: 0x%x id: 0x%x", __func__, p_msg->event, id);
 
   /* verify id and call subsystem event handler */
   if ((id < BTA_ID_MAX) && (bta_sys_cb.reg[id] != NULL)) {
@@ -547,7 +551,7 @@ void bta_sys_sendmsg(void* p_msg) {
  * Returns          void
  *
  ******************************************************************************/
-void do_in_bta_thread(const tracked_objects::Location& from_here,
+void do_in_bta_thread(const base::Location& from_here,
                       const base::Closure& task) {
   base::MessageLoop* bta_message_loop = get_message_loop();
 

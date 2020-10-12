@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <log/log.h>
 
 #include "bt_common.h"
 #include "bt_target.h"
@@ -54,6 +55,8 @@
 #include "btif_av.h"
 #include <hardware/bt_av.h>
 #include "device/include/device_iot_config.h"
+#include "controller.h"
+#include <btcommon_interface_defs.h>
 
 static void btm_read_remote_features(uint16_t handle);
 static void btm_read_remote_ext_features(uint16_t handle, uint8_t page_number);
@@ -202,8 +205,8 @@ bool btm_ble_get_acl_remote_addr(tBTM_SEC_DEV_REC* p_dev_rec,
       break;
 
     case BTM_BLE_ADDR_STATIC:
-      conn_addr = p_dev_rec->ble.static_addr;
-      *p_addr_type = p_dev_rec->ble.static_addr_type;
+      conn_addr = p_dev_rec->ble.identity_addr;
+      *p_addr_type = p_dev_rec->ble.identity_addr_type;
       break;
 
     default:
@@ -242,7 +245,8 @@ void btm_acl_created(const RawAddress& bda, DEV_CLASS dc, BD_NAME bdn,
     p->link_role = link_role;
     p->transport = transport;
     VLOG(1) << "Duplicate btm_acl_created: RemBdAddr: " << bda;
-    BTM_SetLinkPolicy(p->remote_addr, &btm_cb.btm_def_link_policy);
+    uint16_t btm_def_link_policy_local = btm_cb.btm_def_link_policy;
+    BTM_SetLinkPolicy(p->remote_addr, &btm_def_link_policy_local);
     return;
   }
 
@@ -284,13 +288,19 @@ void btm_acl_created(const RawAddress& bda, DEV_CLASS dc, BD_NAME bdn,
 
       /* if BR/EDR do something more */
       if (transport == BT_TRANSPORT_BR_EDR) {
-        int soc_type = get_soc_type();
+        bt_soc_type_t soc_type = controller_get_interface()->get_soc_type();
+        BTM_TRACE_DEBUG("%s: soc_type: %d", __func__, soc_type);
 
         btsnd_hcic_read_rmt_clk_offset(p->hci_handle);
 
-        if ((soc_type == BT_SOC_CHEROKEE) &&
+        if ((soc_type == BT_SOC_TYPE_CHEROKEE || soc_type == BT_SOC_TYPE_HASTINGS) &&
             interop_match_addr_or_name(INTEROP_ENABLE_PL10_ADAPTIVE_CONTROL, &bda)) {
           btm_enable_link_PL10_adaptive_ctrl(hci_handle, true);
+        }
+
+        if (is_soc_lpa_enh_pwr_enabled() &&
+            interop_match_addr_or_name(INTEROP_DISABLE_LPA_ENHANCED_POWER_CONTROL, &bda)) {
+            btm_enable_link_lpa_enh_pwr_ctrl(hci_handle, false);
         }
       }
       p_dev_rec = btm_find_dev_by_handle(hci_handle);
@@ -593,8 +603,9 @@ bool IsHighQualityCodecSelected(const RawAddress& remote_bd_addr) {
     //get the current codec config, so that we can get the codec type.
     BTM_TRACE_DEBUG("%s: codec_config.codec_type:%d", __func__, codec_config.codec_type);
     if ((codec_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC) ||
-        (codec_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_HD)) {
-      BTM_TRACE_DEBUG("%s: LDAC or APTX-HD codec selcted:", __func__);
+        (codec_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_HD) ||
+        (codec_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE)) {
+      BTM_TRACE_DEBUG("%s: LDAC or APTX-HD or APTX-AD codec selcted:", __func__);
       return true;
     } else {
       return false;
@@ -858,7 +869,7 @@ tBTM_STATUS BTM_SetLinkPolicy(const RawAddress& remote_bda,
   /*  BTM_TRACE_API ("%s: requested settings: 0x%04x", __func__, *settings ); */
 
   /* First, check if hold mode is supported */
-  if (*settings != HCI_DISABLE_ALL_LM_MODES) {
+  if (*settings != HCI_POLICY_SETTINGS_DEFAULT_MODE) {
     if ((*settings & HCI_ENABLE_MASTER_SLAVE_SWITCH) &&
         (!HCI_SWITCH_SUPPORTED(localFeatures))) {
       *settings &= (~HCI_ENABLE_MASTER_SLAVE_SWITCH);
@@ -954,6 +965,12 @@ void BTM_SetDefaultLinkPolicy(uint16_t settings) {
 void btm_use_preferred_conn_params(const RawAddress& bda) {
   tL2C_LCB* p_lcb = l2cu_find_lcb_by_bd_addr(bda, BT_TRANSPORT_LE);
   tBTM_SEC_DEV_REC* p_dev_rec = btm_find_or_alloc_dev(bda);
+
+  if (p_lcb == NULL || p_dev_rec == NULL) {
+    BTM_TRACE_ERROR("%s: p_lcb or p_dev_rec not found for remote device: %s", __func__,
+                        bda.ToString().c_str());
+    return;
+  }
 
   /* If there are any preferred connection parameters, set them now */
   if ((p_dev_rec->conn_params.min_conn_int >= BTM_BLE_CONN_INT_MIN) &&
@@ -1232,13 +1249,21 @@ void btm_read_remote_features_complete(uint8_t* p) {
  * Returns          void
  *
  ******************************************************************************/
-void btm_read_remote_ext_features_complete(uint8_t* p) {
+void btm_read_remote_ext_features_complete(uint8_t* p, uint8_t evt_len) {
   tACL_CONN* p_acl_cb;
   uint8_t page_num, max_page;
   uint16_t handle;
   uint8_t acl_idx;
 
   BTM_TRACE_DEBUG("btm_read_remote_ext_features_complete");
+
+  if (evt_len < HCI_EXT_FEATURES_SUCCESS_EVT_LEN) {
+    android_errorWriteLog(0x534e4554, "141552859");
+    BTM_TRACE_ERROR(
+        "btm_read_remote_ext_features_complete evt length too short. length=%d",
+        evt_len);
+    return;
+  }
 
   ++p;
   STREAM_TO_UINT16(handle, p);
@@ -1257,6 +1282,19 @@ void btm_read_remote_ext_features_complete(uint8_t* p) {
     BTM_TRACE_ERROR("btm_read_remote_ext_features_complete page=%d unknown",
                     max_page);
     return;
+  }
+
+  if (page_num > HCI_EXT_FEATURES_PAGE_MAX) {
+    android_errorWriteLog(0x534e4554, "141552859");
+    BTM_TRACE_ERROR("btm_read_remote_ext_features_complete num_page=%d invalid",
+                    page_num);
+    return;
+  }
+
+  if (page_num > max_page) {
+    BTM_TRACE_WARNING(
+        "btm_read_remote_ext_features_complete num_page=%d, max_page=%d "
+        "invalid", page_num, max_page);
   }
 
   p_acl_cb = &btm_cb.acl_db[acl_idx];
@@ -1351,8 +1389,10 @@ void btm_establish_continue(tACL_CONN* p_acl_cb) {
     /* Set the packet types to the default allowed by the device */
     btm_set_packet_types(p_acl_cb, btm_cb.btm_acl_pkt_types_supported);
 
-    if (btm_cb.btm_def_link_policy)
-      BTM_SetLinkPolicy(p_acl_cb->remote_addr, &btm_cb.btm_def_link_policy);
+    if (btm_cb.btm_def_link_policy) {
+      uint16_t btm_def_link_policy_local = btm_cb.btm_def_link_policy;
+      BTM_SetLinkPolicy(p_acl_cb->remote_addr, &btm_def_link_policy_local);
+    }
   }
 #endif
   if(p_acl_cb->link_up_issued == FALSE) {
@@ -1456,8 +1496,7 @@ bool BTM_IsAclConnectionUp(const RawAddress& remote_bda,
                            tBT_TRANSPORT transport) {
   tACL_CONN* p;
 
-  VLOG(2) << __func__ << " RemBdAddr: " << remote_bda;
-
+  BTM_TRACE_DEBUG("%s: RemBdAddr: %s", __func__, remote_bda.ToString().c_str());
   p = btm_bda_to_acl(remote_bda, transport);
   if (p != (tACL_CONN*)NULL) {
     return (true);
@@ -1677,7 +1716,9 @@ void btm_acl_role_changed(uint8_t hci_status, const RawAddress* bd_addr,
   tBTM_ROLE_SWITCH_CMPL* p_data = &btm_cb.devcb.switch_role_ref_data;
   tBTM_SEC_DEV_REC* p_dev_rec;
 
-  BTM_TRACE_WARNING ("btm_acl_role_changed: New role: %d", new_role);
+  BTM_TRACE_WARNING("%s: peer %s hci_status:0x%x new_role:%d", __func__,
+                    (p_bda != nullptr) ?
+                      p_bda->ToString().c_str() : "nullptr", hci_status, new_role);
   /* Ignore any stray events */
   if (p == NULL) {
     /* it could be a failure */
@@ -1685,9 +1726,6 @@ void btm_acl_role_changed(uint8_t hci_status, const RawAddress* bd_addr,
       btm_acl_report_role_change(hci_status, bd_addr);
     return;
   }
-
-  BTM_TRACE_WARNING ("btm_acl_role_changed: BDA: %02x-%02x-%02x-%02x-%02x-%02x",
-        p_bda[0], p_bda[1], p_bda[2], p_bda[3], p_bda[4], p_bda[5]);
 
   p_data->hci_status = hci_status;
 
@@ -2058,7 +2096,7 @@ tBTM_STATUS BTM_RegBusyLevelNotif(tBTM_BL_CHANGE_CB* p_cb, uint8_t* p_level,
 tBTM_STATUS BTM_SetA2dpStreamQoS(const RawAddress& bd, tBTM_CMPL_CB* p_cb) {
   FLOW_SPEC p_flow;
 
-  p_flow.qos_flags = 0;
+  p_flow.qos_unused = 0;
   p_flow.service_type = BEST_EFFORT;
   p_flow.token_rate = 0x00000000;
   p_flow.peak_bandwidth = 0x00000000;
@@ -2092,7 +2130,7 @@ tBTM_STATUS BTM_SetQoS(const RawAddress& bd, FLOW_SPEC* p_flow,
     alarm_set_on_mloop(btm_cb.devcb.qos_setup_timer, BTM_DEV_REPLY_TIMEOUT_MS,
                        btm_qos_setup_timeout, NULL);
 
-    btsnd_hcic_qos_setup(p->hci_handle, p_flow->qos_flags, p_flow->service_type,
+    btsnd_hcic_qos_setup(p->hci_handle, p_flow->qos_unused, p_flow->service_type,
                          p_flow->token_rate, p_flow->peak_bandwidth,
                          p_flow->latency, p_flow->delay_variation);
     return (BTM_CMD_STARTED);
@@ -2115,7 +2153,7 @@ tBTM_STATUS BTM_FlowSpec(const RawAddress& bd, tBT_FLOW_SPEC* p_flow,
   if (p != NULL) {
     btm_cb.devcb.p_flow_spec_cmpl_cb = p_cb;
 
-    btsnd_hcic_flow_spec(p->hci_handle, p_flow->qos_flags, p_flow->flow_direction,
+    btsnd_hcic_flow_spec(p->hci_handle, p_flow->qos_unused, p_flow->flow_direction,
                          p_flow->service_type,
                          p_flow->token_rate, p_flow->token_bucket_size ,
                          p_flow->peak_bandwidth, p_flow->latency);
@@ -2167,7 +2205,7 @@ void btm_qos_setup_complete(uint8_t status, uint16_t handle,
     qossu.status = status;
     qossu.handle = handle;
     if (p_flow != NULL) {
-      qossu.flow.qos_flags = p_flow->qos_flags;
+      qossu.flow.qos_unused = p_flow->qos_unused;
       qossu.flow.service_type = p_flow->service_type;
       qossu.flow.token_rate = p_flow->token_rate;
       qossu.flow.peak_bandwidth = p_flow->peak_bandwidth;
@@ -2204,7 +2242,7 @@ void btm_flow_spec_complete(uint8_t status, uint16_t handle,
     flow_su.status = status;
     flow_su.handle = handle;
     if (p_flow != NULL) {
-      flow_su.flow.qos_flags = p_flow->qos_flags;
+      flow_su.flow.qos_unused = p_flow->qos_unused;
       flow_su.flow.service_type = p_flow->service_type;
       flow_su.flow.flow_direction = p_flow->flow_direction;
       flow_su.flow.token_rate = p_flow->token_rate;

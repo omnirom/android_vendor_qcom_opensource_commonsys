@@ -95,7 +95,7 @@
  ******************************************************************************/
 bool BTM_SecAddDevice(const RawAddress& bd_addr, DEV_CLASS dev_class,
                       BD_NAME bd_name, uint8_t* features,
-                      uint32_t trusted_mask[], LINK_KEY link_key,
+                      uint32_t trusted_mask[], LinkKey* p_link_key,
                       uint8_t key_type, tBTM_IO_CAP io_cap,
                       uint8_t pin_length) {
   BTM_TRACE_API("%s: link key type:%x", __func__, key_type);
@@ -103,6 +103,9 @@ bool BTM_SecAddDevice(const RawAddress& bd_addr, DEV_CLASS dev_class,
   tBTM_SEC_DEV_REC* p_dev_rec = btm_find_dev(bd_addr);
   if (!p_dev_rec) {
     p_dev_rec = btm_sec_allocate_dev_rec();
+    BTM_TRACE_API("%s: allocated p_dev_rec=%p, bd_addr=%s", __func__, p_dev_rec,
+                  bd_addr.ToString().c_str());
+
     p_dev_rec->bd_addr = bd_addr;
 
     p_dev_rec->hci_handle = BTM_GetHCIConnHandle(bd_addr, BT_TRANSPORT_BR_EDR);
@@ -154,10 +157,10 @@ bool BTM_SecAddDevice(const RawAddress& bd_addr, DEV_CLASS dev_class,
 
   BTM_SEC_COPY_TRUSTED_DEVICE(trusted_mask, p_dev_rec->trusted_mask);
 
-  if (link_key) {
+  if (p_link_key) {
     VLOG(2) << __func__ << ": BDA: " << bd_addr;
     p_dev_rec->sec_flags |= BTM_SEC_LINK_KEY_KNOWN;
-    memcpy(p_dev_rec->link_key, link_key, LINK_KEY_LEN);
+    p_dev_rec->link_key = *p_link_key;
     p_dev_rec->link_key_type = key_type;
     p_dev_rec->pin_code_length = pin_length;
 
@@ -296,9 +299,11 @@ char* BTM_SecReadDevName(const RawAddress& bd_addr) {
  ******************************************************************************/
 tBTM_SEC_DEV_REC* btm_sec_alloc_dev(const RawAddress& bd_addr) {
   tBTM_INQ_INFO* p_inq_info;
-  BTM_TRACE_EVENT("btm_sec_alloc_dev");
 
   tBTM_SEC_DEV_REC* p_dev_rec = btm_sec_allocate_dev_rec();
+
+  BTM_TRACE_EVENT("%s: allocated p_dev_rec=%p, bd_addr=%s", __func__, p_dev_rec,
+                  bd_addr.ToString().c_str());
 
   /* Check with the BT manager if details about remote device are known */
   /* outgoing connection */
@@ -334,6 +339,7 @@ void btm_sec_free_dev(tBTM_SEC_DEV_REC* p_dev_rec) {
   p_dev_rec->sec_flags = 0;
   p_dev_rec->sm4 = BTM_SM4_UNKNOWN;
   p_dev_rec->p_cur_service = NULL;
+  p_dev_rec->p_callback = NULL;
 
   /* Clear out any saved BLE keys */
   btm_sec_clear_ble_keys(p_dev_rec);
@@ -599,6 +605,7 @@ tBTM_SEC_DEV_REC* btm_sec_allocate_dev_rec(void) {
   p_dev_rec->bond_type = BOND_TYPE_UNKNOWN;
   p_dev_rec->timestamp = btm_cb.dev_rec_count++;
   p_dev_rec->rmt_io_caps = BTM_IO_CAP_UNKNOWN;
+  p_dev_rec->security_required = BTM_SEC_NONE;
 
   return p_dev_rec;
 }

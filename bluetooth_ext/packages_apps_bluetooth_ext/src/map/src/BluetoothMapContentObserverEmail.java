@@ -58,6 +58,7 @@ import com.android.bluetooth.map.BluetoothMapbMessageMime.MimePart;
 import com.android.bluetooth.mapapi.BluetoothMapContract;
 import com.android.bluetooth.mapapi.BluetoothMapEmailContract;
 import com.android.bluetooth.mapapi.BluetoothMapContract.MessageColumns;
+import com.android.bluetooth.R;
 import com.google.android.mms.pdu.PduHeaders;
 import android.database.sqlite.SQLiteException;
 
@@ -231,7 +232,7 @@ public class BluetoothMapContentObserverEmail extends BluetoothMapContentObserve
         }
         mEnableSmsMms = enableSmsMms;
         mMnsClient = mnsClient;
-        mEmailPackage = BluetoothMapCommonUtils.EMAIL_UI_PKG;
+        mEmailPackage = mContext.getString(R.string.email_ui_package);
      }
 
     private Map<Long, Msg> getMsgListMsg() {

@@ -33,8 +33,13 @@
 #include "osi/include/log.h"
 #include "utils/include/bt_utils.h"
 #include <hardware/bt_av.h>
+#include "bt_configstore.h"
+#include <dlfcn.h>
+#include <vector>
+#include "stack_config.h"
 
 #define BTSNOOP_ENABLE_PROPERTY "persist.bluetooth.btsnoopenable"
+#define BTSNOOP_SOCLOG_PROPERTY "persist.vendor.service.bdroid.soclog"
 
 const bt_event_mask_t BLE_EVENT_MASK = {
     {0x00, 0x00, 0x00, 0x00, 0x00, 0x0B, 0xFE, 0x7f}};
@@ -80,15 +85,34 @@ static uint8_t local_supported_codecs[MAX_LOCAL_SUPPORTED_CODECS_SIZE];
 static uint8_t scrambling_supported_freqs[MAX_SUPPORTED_SCRAMBLING_FREQ_SIZE];
 static uint8_t number_of_local_supported_codecs = 0;
 static uint8_t number_of_scrambling_supported_freqs = 0;
-static bt_device_features_t add_on_features;
-static uint8_t add_on_features_length = 0;
+static bt_device_soc_add_on_features_t soc_add_on_features;
+static uint8_t soc_add_on_features_length = 0;
 static uint16_t product_id, response_version;
+static bt_device_host_add_on_features_t host_add_on_features;
+static uint8_t host_add_on_features_length = 0;
+static uint8_t simple_pairing_options = 0;
+static uint8_t maximum_encryption_key_size = 0;
 
 static bool readable;
 static bool ble_supported;
 static bool ble_offload_features_supported;
 static bool simple_pairing_supported;
 static bool secure_connections_supported;
+static bool read_simple_pairing_options_supported;
+
+//BT features related defines
+static bt_soc_type_t soc_type = BT_SOC_TYPE_DEFAULT;
+static char a2dp_offload_Cap[PROPERTY_VALUE_MAX] = {'\0'};
+static bool spilt_a2dp_supported = true;
+static bool wipower_supported = false;
+static bool aac_frame_ctl_enabled = false;
+
+static bool a2dp_multicast_enabled = false;
+static bool twsp_state_supported = false;
+static bt_configstore_interface_t* bt_configstore_intf = NULL;
+static void *bt_configstore_lib_handle = NULL;
+
+static int load_bt_configstore_lib();
 
 #define AWAIT_COMMAND(command) \
   static_cast<BT_HDR*>(future_await(hci->transmit_command_futured(command)))
@@ -96,7 +120,6 @@ static bool secure_connections_supported;
 // Module lifecycle functions
 
 void send_soc_log_command(bool value) {
-  int soc_type = get_soc_type();
   uint8_t param[5] = {0x10,0x03,0x00,0x00,0x01};
   uint8_t param_cherokee[2] = {0x14, 0x01};
   if (!value) {
@@ -105,26 +128,154 @@ void send_soc_log_command(bool value) {
     param_cherokee[1] = 0x00;
   }
 
-  if (soc_type == BT_SOC_SMD) {
+  if (soc_type == BT_SOC_TYPE_SMD) {
     LOG_INFO(LOG_TAG, "%s for BT_SOC_SMD.", __func__);
     BTM_VendorSpecificCommand(HCI_VS_HOST_LOG_OPCODE,5,param,NULL);
-  } else if (soc_type == BT_SOC_CHEROKEE || soc_type == BT_SOC_HASTINGS) {
-    LOG_INFO(LOG_TAG, "%s for %s", __func__, soc_type == BT_SOC_CHEROKEE ?
-                "BT_SOC_CHEROKEE" : "BT_SOC_HASTINGS");
+  } else if (soc_type >= BT_SOC_TYPE_CHEROKEE) {
+    LOG_INFO(LOG_TAG, "%s for soc_type: %d", __func__, soc_type);
     BTM_VendorSpecificCommand(HCI_VS_HOST_LOG_OPCODE, 2, param_cherokee, NULL);
   }
 }
 
 static bool is_soc_logging_enabled() {
-  char btsnoop_enabled[PROPERTY_VALUE_MAX] = {0};
-  osi_property_get(BTSNOOP_ENABLE_PROPERTY, btsnoop_enabled, "false");
+  char btsnoop_enabled[PROPERTY_VALUE_MAX] = "false";
+  char btsoclog_enabled[PROPERTY_VALUE_MAX] = {0};
+  char donglemode_prop[PROPERTY_VALUE_MAX] = "false";
+
+  if(osi_property_get("persist.bluetooth.donglemode", donglemode_prop, "false") &&
+      !strcmp(donglemode_prop, "true")) {
+    return false;
+  }
+  osi_property_get(BTSNOOP_SOCLOG_PROPERTY, btsoclog_enabled, "not-set");
+
+  /*
+   * For SMD targets, always check if snoop logs are enabled and
+   * ignore the soclog property.
+   * For other targets, if soclog property is set, stack doesn't need to
+   * send VSC command as BT transport driver will send the command during patch
+   * download
+   */
+  if ((soc_type == BT_SOC_TYPE_SMD) ||
+      (strncmp(btsoclog_enabled, "not-set", 7) == 0))
+    osi_property_get(BTSNOOP_ENABLE_PROPERTY, btsnoop_enabled, "false");
+  else {
+    LOG_INFO(LOG_TAG,
+      "%s: soclog property set, transport driver will send the logs", __func__);
+  }
   return strncmp(btsnoop_enabled, "true", 4) == 0;
+}
+
+bool is_soc_lpa_enh_pwr_enabled() {
+  char lpa_enh_pwr_enabled[PROPERTY_VALUE_MAX] = {0};
+
+  if (soc_type != BT_SOC_TYPE_HASTINGS &&
+       soc_type != BT_SOC_TYPE_CHEROKEE) {
+    return false;
+  }
+  osi_property_get("persist.vendor.btstack.enable.lpa", lpa_enh_pwr_enabled, "false");
+  return strncmp(lpa_enh_pwr_enabled, "true", 4) == 0;
 }
 
 static future_t* start_up(void) {
   BT_HDR* response;
-  int soc_type = get_soc_type();
 
+  //initialize number_of_scrambling_supported_freqs to 0 during start_up
+  number_of_scrambling_supported_freqs = 0;
+  soc_add_on_features_length = 0;
+  host_add_on_features_length = 0;
+
+// read properties  for offtarget test setup
+#if (OFF_TARGET_TEST_ENABLED == TRUE)
+   char bt_soc_type[PROPERTY_VALUE_MAX];
+   osi_property_get("vendor.qcom.bluetooth.soc", bt_soc_type, NULL);
+   osi_property_get("persist.vendor.qcom.bluetooth.a2dp_offload_cap",
+          a2dp_offload_Cap, "");
+   LOG_INFO(LOG_TAG, "%s soc_type= %s", __func__, bt_soc_type);
+   if (!strncmp(bt_soc_type, "hastings", sizeof(bt_soc_type))) {
+     soc_type = BT_SOC_TYPE_HASTINGS;
+   }
+   LOG_INFO(LOG_TAG, "%s soc_type= %d ", __func__, soc_type);
+#else
+// get properties from configstore for device
+  load_bt_configstore_lib();
+  if (bt_configstore_intf != NULL) {
+     std::vector<vendor_property_t> vPropList;
+     bt_configstore_intf->get_vendor_properties(BT_PROP_ALL, vPropList);
+
+     for (auto&& vendorProp : vPropList) {
+        switch(vendorProp.type){
+          case BT_PROP_SOC_TYPE:
+            char soc_name[32];
+
+            strlcpy(soc_name, vendorProp.value, sizeof(soc_name));
+            soc_type = bt_configstore_intf->convert_bt_soc_name_to_soc_type(soc_name);
+            LOG_INFO(LOG_TAG, "%s:: soc_name:%s, soc_type = %d", __func__,
+                soc_name, soc_type);
+            break;
+
+          case BT_PROP_A2DP_OFFLOAD_CAP:
+            strlcpy(a2dp_offload_Cap, vendorProp.value, sizeof(a2dp_offload_Cap));
+            LOG_INFO(LOG_TAG, "%s:: a2dp_offload_Cap = %s", __func__,
+                a2dp_offload_Cap);
+            break;
+
+          case BT_PROP_SPILT_A2DP:
+            if (!strncasecmp(vendorProp.value, "true", sizeof("true"))) {
+              spilt_a2dp_supported = true;
+            } else {
+              spilt_a2dp_supported = false;
+            }
+
+            LOG_INFO(LOG_TAG, "%s:: spilt_a2dp_supported = %d", __func__,
+                spilt_a2dp_supported);
+            break;
+
+          case BT_PROP_AAC_FRAME_CTL:
+            if (!strncasecmp(vendorProp.value, "true", sizeof("true"))) {
+              aac_frame_ctl_enabled = true;
+            } else {
+              aac_frame_ctl_enabled = false;
+            }
+
+            LOG_INFO(LOG_TAG, "%s:: aac_frame_ctl_enabled = %d", __func__,
+                aac_frame_ctl_enabled);
+            break;
+
+          case BT_PROP_WIPOWER:
+            if (!strncasecmp(vendorProp.value, "true", sizeof("true"))) {
+              wipower_supported = true;
+            } else {
+              wipower_supported = false;
+            }
+            LOG_INFO(LOG_TAG, "%s:: wipower_supported = %d", __func__,
+                wipower_supported);
+
+           break;
+
+          case BT_PROP_A2DP_MCAST_TEST:
+            if (!strncasecmp(vendorProp.value, "true", sizeof("true"))) {
+              a2dp_multicast_enabled = true;
+            } else {
+              a2dp_multicast_enabled = false;
+            }
+            LOG_INFO(LOG_TAG, "%s:: a2dp_multicast_supported = %d", __func__,
+                a2dp_multicast_enabled);
+            break;
+          case BT_PROP_TWSP_STATE:
+            if (!strncasecmp(vendorProp.value, "true", sizeof("true"))) {
+              twsp_state_supported = true;
+            } else {
+              twsp_state_supported = false;
+            }
+            LOG_INFO(LOG_TAG, "%s:: twsp_state_supported = %d", __func__,
+                twsp_state_supported);
+           break;
+         default:
+            break;
+       }
+    }
+  }
+#endif  /* OFF_TARGET_TEST_ENABLED */
   // Send the initial reset command
   response = AWAIT_COMMAND(packet_factory->make_reset());
   packet_parser->parse_generic_command_complete(response);
@@ -147,8 +298,16 @@ static future_t* start_up(void) {
     send_soc_log_command(true);
   }
 
-  if (soc_type == BT_SOC_SMD || soc_type == BT_SOC_CHEROKEE) {
-    btm_enable_soc_iot_info_report(is_iot_info_report_enabled());
+  if (soc_type == BT_SOC_TYPE_SMD || soc_type == BT_SOC_TYPE_CHEROKEE) {
+    char donglemode_prop[PROPERTY_VALUE_MAX] = "false";
+    if(osi_property_get("persist.bluetooth.donglemode", donglemode_prop, "false") &&
+        !strcmp(donglemode_prop, "false")) {
+      btm_enable_soc_iot_info_report(is_iot_info_report_enabled());
+    }
+  }
+
+  if (is_soc_lpa_enh_pwr_enabled()) {
+    btm_enable_link_lpa_enh_pwr_ctrl((uint16_t)HCI_INVALID_HANDLE, true);
   }
 
   // Read the local version info off the controller next, including
@@ -190,12 +349,8 @@ static future_t* start_up(void) {
   }
 
   if (HCI_LE_SPT_SUPPORTED(features_classic[0].as_array)) {
-    uint8_t simultaneous_le_host =
-        HCI_SIMUL_LE_BREDR_SUPPORTED(features_classic[0].as_array)
-            ? BTM_BLE_SIMULTANEOUS_HOST
-            : 0;
     response = AWAIT_COMMAND(packet_factory->make_ble_write_host_support(
-        BTM_BLE_HOST_SUPPORT, simultaneous_le_host));
+        BTM_BLE_HOST_SUPPORT, BTM_BLE_SIMULTANEOUS_HOST));
 
     packet_parser->parse_generic_command_complete(response);
 
@@ -217,14 +372,24 @@ static future_t* start_up(void) {
     page_number++;
   }
 
-  // read BLE offload features support from controller
-  response = AWAIT_COMMAND(packet_factory->make_ble_read_offload_features_support());
-  packet_parser->parse_ble_read_offload_features_response(response, &ble_offload_features_supported);
+  char donglemode_prop[PROPERTY_VALUE_MAX] = "false";
+  if(osi_property_get("persist.bluetooth.donglemode", donglemode_prop, "false") &&
+      !strcmp(donglemode_prop, "false")) {
+    // read BLE offload features support from controller
+    response = AWAIT_COMMAND(packet_factory->make_ble_read_offload_features_support());
+    packet_parser->parse_ble_read_offload_features_response(response, &ble_offload_features_supported);
+  }
+
 #if (SC_MODE_INCLUDED == TRUE)
   if(ble_offload_features_supported) {
     secure_connections_supported =
         HCI_SC_CTRLR_SUPPORTED(features_classic[2].as_array);
-    if (secure_connections_supported) {
+    bool pts_secure_connections_host_supported_disabled =
+       stack_config_get_interface()->get_pts_bredr_secureconnection_host_support_disabled();
+    if (pts_secure_connections_host_supported_disabled) {
+      LOG_WARN(LOG_TAG, "%s secure connections host support disabled from pts ", __func__);
+    }
+    if (secure_connections_supported && !pts_secure_connections_host_supported_disabled) {
       response = AWAIT_COMMAND(
           packet_factory->make_write_secure_connections_host_support(
               HCI_SC_MODE_ENABLED));
@@ -309,17 +474,66 @@ static future_t* start_up(void) {
         response, &number_of_local_supported_codecs, local_supported_codecs);
   }
 
-  //Read HCI_VS_GET_ADDON_FEATURES_SUPPORT
-  if (soc_type == BT_SOC_CHEROKEE || soc_type == BT_SOC_HASTINGS) {
-    response =
-          AWAIT_COMMAND(packet_factory->make_read_add_on_features_supported());
-    if (response) {
+  read_simple_pairing_options_supported =
+      HCI_READ_LOCAL_SIMPLE_PAIRING_OPTIONS_SUPPORTED(supported_commands);
 
-      LOG_DEBUG(LOG_TAG, "%s sending add-on features supported VSC", __func__);
-      packet_parser->parse_read_add_on_features_supported_response(
-          response, &add_on_features, &add_on_features_length, &product_id, &response_version);
+  // read local simple pairing options
+  if (read_simple_pairing_options_supported) {
+    LOG_DEBUG(LOG_TAG, "%s read local simple pairing options", __func__);
+    response =
+        AWAIT_COMMAND(packet_factory->make_read_local_simple_pairing_options());
+    packet_parser->parse_read_local_simple_paring_options_response(
+        response, &simple_pairing_options, &maximum_encryption_key_size);
+    LOG_DEBUG(LOG_TAG, "%s simple pairing options is 0x%x", __func__,
+        simple_pairing_options);
+  }
+
+  if (bt_configstore_intf != NULL) {
+    host_add_on_features_list_t features_list;
+
+    if (bt_configstore_intf->get_host_add_on_features(&features_list)) {
+      host_add_on_features_length = features_list.feat_mask_len;
+      if (host_add_on_features_length != 0 &&
+          host_add_on_features_length <= HOST_ADD_ON_FEATURES_MAX_SIZE)
+        memcpy(host_add_on_features.as_array, features_list.features,
+            host_add_on_features_length);
     }
-    if (!add_on_features_length) {
+  }
+
+  //Read HCI_VS_GET_ADDON_FEATURES_SUPPORT
+  if (soc_type >= BT_SOC_TYPE_CHEROKEE) {
+
+    if (bt_configstore_intf != NULL) {
+      controller_add_on_features_list_t features_list;
+
+      if (bt_configstore_intf->get_controller_add_on_features(&features_list)){
+        product_id = features_list.product_id;
+        response_version = features_list.rsp_version;
+        soc_add_on_features_length = features_list.feat_mask_len;
+        if (soc_add_on_features_length != 0) {
+          if (soc_add_on_features_length <= SOC_ADD_ON_FEATURES_MAX_SIZE) {
+            memcpy(soc_add_on_features.as_array, features_list.features,
+                soc_add_on_features_length);
+          } else {
+            LOG(FATAL) << __func__ << "invalid soc add on features length: "
+              << +soc_add_on_features_length;
+          }
+        }
+      }
+    }
+
+    if (!soc_add_on_features_length) {
+      response =
+            AWAIT_COMMAND(packet_factory->make_read_add_on_features_supported());
+      if (response) {
+
+        LOG_DEBUG(LOG_TAG, "%s sending add-on features supported VSC", __func__);
+        packet_parser->parse_read_add_on_features_supported_response(
+            response, &soc_add_on_features, &soc_add_on_features_length,
+            &product_id, &response_version);
+      }
+    }
+    if (!soc_add_on_features_length) {
       // read scrambling support from controller incase of cherokee
       response =
             AWAIT_COMMAND(packet_factory->make_read_scrambling_supported_freqs());
@@ -334,14 +548,14 @@ static future_t* start_up(void) {
                         number_of_scrambling_supported_freqs);
       }
     } else {
-        if (HCI_SPLIT_A2DP_SCRAMBLING_DATA_REQUIRED(add_on_features.as_array))  {
-          if (HCI_SPLIT_A2DP_44P1KHZ_SAMPLE_FREQ(add_on_features.as_array)) {
+        if (HCI_SPLIT_A2DP_SCRAMBLING_DATA_REQUIRED(soc_add_on_features.as_array))  {
+          if (HCI_SPLIT_A2DP_44P1KHZ_SAMPLE_FREQ(soc_add_on_features.as_array)) {
             scrambling_supported_freqs[number_of_scrambling_supported_freqs++]
                                 = BTAV_A2DP_CODEC_SAMPLE_RATE_44100;
             scrambling_supported_freqs[number_of_scrambling_supported_freqs++]
                                 = BTAV_A2DP_CODEC_SAMPLE_RATE_88200;
           }
-          if (HCI_SPLIT_A2DP_48KHZ_SAMPLE_FREQ(add_on_features.as_array)) {
+          if (HCI_SPLIT_A2DP_48KHZ_SAMPLE_FREQ(soc_add_on_features.as_array)) {
             scrambling_supported_freqs[number_of_scrambling_supported_freqs++]
                                 = BTAV_A2DP_CODEC_SAMPLE_RATE_48000;
             scrambling_supported_freqs[number_of_scrambling_supported_freqs++]
@@ -352,11 +566,20 @@ static future_t* start_up(void) {
   }
 
 
+  if (!HCI_READ_ENCR_KEY_SIZE_SUPPORTED(supported_commands)) {
+    LOG(FATAL) << " Controller must support Read Encryption Key Size command";
+  }
+
   readable = true;
   return future_new_immediate(FUTURE_SUCCESS);
 }
 
 static future_t* shut_down(void) {
+  if (bt_configstore_lib_handle) {
+    dlclose(bt_configstore_lib_handle);
+    bt_configstore_lib_handle = NULL;
+    bt_configstore_intf = NULL;
+  }
   readable = false;
   return future_new_immediate(FUTURE_SUCCESS);
 }
@@ -616,10 +839,10 @@ static uint8_t get_le_all_initiating_phys() {
   return phy;
 }
 
-static const bt_device_features_t* get_add_on_features(uint8_t *add_on_features_len) {
+static const bt_device_soc_add_on_features_t* get_soc_add_on_features(uint8_t *add_on_features_len) {
   CHECK(readable);
-  *add_on_features_len = add_on_features_length;
-  return &add_on_features;
+  *add_on_features_len = soc_add_on_features_length;
+  return &soc_add_on_features;
 }
 
 static uint16_t  get_product_id(void) {
@@ -632,6 +855,57 @@ static uint16_t get_response_version(void) {
   return response_version;
 }
 
+static const bt_device_host_add_on_features_t*
+      get_host_add_on_features(uint8_t *add_on_features_len) {
+  CHECK(readable);
+  *add_on_features_len = host_add_on_features_length;
+  return &host_add_on_features;
+}
+
+static bool supports_read_simple_pairing_options(void) {
+  CHECK(readable);
+  return read_simple_pairing_options_supported;
+}
+
+static bool performs_remote_public_key_validation(void) {
+  CHECK(readable);
+  if (simple_pairing_options != 0) {
+    return HCI_REMOTE_PUBLIC_KEY_VALIDATION_SUPPORTED(simple_pairing_options);
+  }
+  return false;
+}
+
+static bt_soc_type_t get_soc_type() {
+  CHECK(readable);
+  return soc_type;
+}
+
+static const char * get_a2dp_offload_cap() {
+  CHECK(readable);
+  return a2dp_offload_Cap;
+}
+
+static bool supports_spilt_a2dp() {
+  CHECK(readable);
+  return spilt_a2dp_supported;
+}
+
+static bool supports_aac_frame_ctl() {
+  CHECK(readable);
+  return aac_frame_ctl_enabled;
+}
+
+static bool supports_wipower() {
+  CHECK(readable);
+  return wipower_supported;
+}
+
+static bool is_multicast_enabled() {
+  return a2dp_multicast_enabled;
+}
+static bool supports_twsp_remote_state() {
+  return twsp_state_supported;
+}
 static const controller_t interface = {
     get_is_ready,
 
@@ -685,9 +959,20 @@ static const controller_t interface = {
     supports_ble_offload_features,
     get_le_all_initiating_phys,
     get_scrambling_supported_freqs,
-    get_add_on_features,
+    get_soc_add_on_features,
     get_product_id,
-    get_response_version};
+    get_response_version,
+    get_host_add_on_features,
+    supports_read_simple_pairing_options,
+    performs_remote_public_key_validation,
+    get_soc_type,
+    get_a2dp_offload_cap,
+    supports_spilt_a2dp,
+    supports_aac_frame_ctl,
+    supports_wipower,
+    is_multicast_enabled,
+    supports_twsp_remote_state,
+};
 
 const controller_t* controller_get_interface() {
   static bool loaded = false;
@@ -711,3 +996,40 @@ const controller_t* controller_get_test_interface(
   packet_parser = packet_parser_interface;
   return &interface;
 }
+
+int load_bt_configstore_lib() {
+  const char* sym = BT_CONFIG_STORE_INTERFACE_STRING;
+  const char* err = "error unknown";
+  bt_configstore_lib_handle = dlopen("libbtconfigstore.so", RTLD_NOW);
+  if (!bt_configstore_lib_handle) {
+    const char* err_str = dlerror();
+    LOG(ERROR) << __func__ << ": failed to load Bt Config store library, error="
+               << (err_str ? err_str : err);
+    goto error;
+  }
+
+  // Get the address of the bt_configstore_interface_t.
+  bt_configstore_intf = (bt_configstore_interface_t*)dlsym(bt_configstore_lib_handle, sym);
+  if (!bt_configstore_intf) {
+    LOG(ERROR) << __func__ << ": failed to load symbol from bt config store library"
+               << sym;
+    goto error;
+  }
+
+  // Success.
+  LOG(INFO) << __func__ << " loaded HAL: bt_configstore_interface_t=" << bt_configstore_intf
+            << ", bt_configstore_lib_handle=" << bt_configstore_lib_handle;
+
+  return 0;
+
+error:
+  if (bt_configstore_lib_handle) {
+    dlclose(bt_configstore_lib_handle);
+    bt_configstore_lib_handle = NULL;
+    bt_configstore_intf = NULL;
+  }
+
+  return -EINVAL;
+}
+
+

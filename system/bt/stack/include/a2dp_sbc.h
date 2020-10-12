@@ -244,11 +244,6 @@ bool A2DP_AdjustCodecSbc(uint8_t* p_codec_info);
 // otherwise |BTAV_A2DP_CODEC_INDEX_MAX|.
 btav_a2dp_codec_index_t A2DP_SourceCodecIndexSbc(const uint8_t* p_codec_info);
 
-// Gets the A2DP SBC Source codec index for a given |p_codec_info|.
-// Returns the corresponding |btav_a2dp_codec_index_t| on success,
-// otherwise |BTAV_A2DP_CODEC_INDEX_MAX|.
-btav_a2dp_codec_index_t A2DP_SinkCodecIndexSbc(const uint8_t* p_codec_info);
-
 // Gets the A2DP SBC Source codec name.
 const char* A2DP_CodecIndexStrSbc(void);
 

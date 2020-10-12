@@ -1,17 +1,16 @@
 cc_defaults {
     name: "libbluetoothqti_jni_default",
-    // KEYSTONE(I999cc7985b32bae2db80bcfcede22d37b8e62ff5,b/141267953)
     header_libs: ["libbluetooth_headers", "libnativehelper_header_only"],
     include_dirs: [
         "system/bt/types",
-        "packages/apps/Bluetooth/jni",
+        "vendor/qcom/opensource/commonsys/packages/apps/Bluetooth/jni",
         "vendor/qcom/opensource/commonsys/bluetooth_ext/vhal/include",
         "vendor/qcom/opensource/commonsys/bluetooth_ext/system_bt_ext/btconfigstore",
         "vendor/qcom/opensource/commonsys-intf/bluetooth/include",
     ],
     shared_libs: [
         "libandroid_runtime",
-        "libctconfigstore",
+        "libbtconfigstore",
     ],
 }
 

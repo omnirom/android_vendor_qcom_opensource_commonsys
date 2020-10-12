@@ -53,6 +53,7 @@ import com.android.bluetooth.map.BluetoothMapbMessageMime.MimePart;
 import com.android.bluetooth.mapapi.BluetoothMapEmailContract;
 import com.android.bluetooth.mapapi.BluetoothMapContract;
 import com.android.bluetooth.mapapi.BluetoothMapContract.ConversationColumns;
+import com.android.bluetooth.R;
 import com.google.android.mms.pdu.CharacterSets;
 import com.google.android.mms.pdu.PduHeaders;
 
@@ -73,7 +74,7 @@ import java.util.HashMap;
 import java.util.List;
 import android.text.Html;
 import java.util.concurrent.atomic.AtomicLong;
-import com.android.emailcommon.provider.EmailContent.Message;
+//import com.android.emailcommon.provider.EmailContent.Message;
 
 @TargetApi(19)
 public class BluetoothMapContentEmail extends BluetoothMapContent {
@@ -1056,7 +1057,7 @@ public class BluetoothMapContentEmail extends BluetoothMapContent {
         emailIn.setAction(BluetoothMapEmailContract.ACTION_CHECK_MAIL);
         emailIn.putExtra(BluetoothMapEmailContract.EXTRA_ACCOUNT, accountId);
         emailIn.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
-        emailIn.setPackage(BluetoothMapCommonUtils.EMAIL_UI_PKG);
+        emailIn.setPackage(mContext.getString(R.string.email_ui_package));
         mContext.sendBroadcast(emailIn);
     }
 
@@ -1114,7 +1115,7 @@ public class BluetoothMapContentEmail extends BluetoothMapContent {
                 String where = setWhereFilter(folderElement, fi, ap);
 
                 if(!where.isEmpty()) {
-                    where += " AND "+ Message.FLAG_LOADED_SELECTION;
+                    // where += " AND "+ Message.FLAG_LOADED_SELECTION;
                     where += " order by " +BluetoothMapEmailContract.ExtEmailMessageColumns
                         .TIMESTAMP+" desc "+ limit;
                     if (D) Log.d(TAG, "msgType: " + fi.mMsgType + " where: " + where);

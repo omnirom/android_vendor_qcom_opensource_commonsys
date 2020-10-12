@@ -268,7 +268,7 @@ extern uint8_t* sdpu_extract_attr_seq(uint8_t* p, uint16_t param_len,
 extern uint8_t* sdpu_extract_uid_seq(uint8_t* p, uint16_t param_len,
                                      tSDP_UUID_SEQ* p_seq);
 
-extern uint8_t* sdpu_get_len_from_type(uint8_t* p, uint8_t type,
+extern uint8_t* sdpu_get_len_from_type(uint8_t* p, uint8_t* p_end, uint8_t type,
                                        uint32_t* p_len);
 extern bool sdpu_is_base_uuid(uint8_t* p_uuid);
 extern bool sdpu_compare_uuid_arrays(uint8_t* p_uuid1, uint32_t len1,
@@ -322,4 +322,12 @@ extern void sdp_disc_server_rsp(tCONN_CB* p_ccb, BT_HDR* p_msg);
 
 extern void update_pce_entry_after_cancelling_bonding(RawAddress remote_addr);
 extern void check_and_store_pce_profile_version(tSDP_DISC_REC* p_sdp_rec);
+extern bool sdpu_is_pbap_0102_enabled();
+
+extern void update_mce_entry_after_cancelling_bonding(RawAddress remote_addr);
+extern void check_and_store_mce_profile_version(tSDP_DISC_REC* p_sdp_rec);
+extern bool sdpu_is_map_0104_enabled();
+
+extern bool sdpu_is_opp_0100_enabled();
+
 #endif

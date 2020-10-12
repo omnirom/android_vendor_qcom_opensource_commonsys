@@ -146,6 +146,7 @@ tBTM_STATUS BTM_PmRegister(uint8_t mask, uint8_t* p_pm_id,
 tBTM_STATUS BTM_SetPowerMode(uint8_t pm_id, const RawAddress& remote_bda,
                              tBTM_PM_PWR_MD* p_mode) {
   uint8_t* p_features;
+  uint8_t* p_rem_features;
   int ind, acl_ind;
   tBTM_PM_MCB* p_cb = NULL; /* per ACL link */
   tBTM_PM_MODE mode;
@@ -170,7 +171,11 @@ tBTM_STATUS BTM_SetPowerMode(uint8_t pm_id, const RawAddress& remote_bda,
     /* check if the requested mode is supported */
     ind = mode - BTM_PM_MD_HOLD; /* make it base 0 */
     p_features = BTM_ReadLocalFeatures();
-    if (ind < BTM_PM_NUM_SET_MODES && !(p_features[btm_pm_mode_off[ind]] & btm_pm_mode_msk[ind]))
+    p_rem_features = BTM_ReadRemoteFeatures(remote_bda);
+    if (ind < BTM_PM_NUM_SET_MODES &&
+        (!(p_features[btm_pm_mode_off[ind]] & btm_pm_mode_msk[ind]) ||
+        ((p_rem_features != NULL) &&
+         (!(p_rem_features[btm_pm_mode_off[ind]] & btm_pm_mode_msk[ind])))))
       return BTM_MODE_UNSUPPORTED;
   }
 
@@ -196,21 +201,17 @@ tBTM_STATUS BTM_SetPowerMode(uint8_t pm_id, const RawAddress& remote_bda,
   if (((pm_id != BTM_PM_SET_ONLY_ID) &&
        (btm_cb.pm_reg_db[pm_id].mask & BTM_PM_REG_SET)) ||
       ((pm_id == BTM_PM_SET_ONLY_ID) &&
-       (btm_cb.pm_pend_link != MAX_L2CAP_LINKS))) {
-#if (BTM_PM_DEBUG == TRUE)
+       (btm_cb.pm_pend_link != MAX_L2CAP_LINKS || p_cb->state == BTM_PM_STS_PENDING))) {
     BTM_TRACE_DEBUG("BTM_SetPowerMode: Saving cmd acl_ind %d temp_pm_id %d",
                     acl_ind, temp_pm_id);
-#endif  // BTM_PM_DEBUG
     /* Make sure mask is set to BTM_PM_REG_SET */
     btm_cb.pm_reg_db[temp_pm_id].mask |= BTM_PM_REG_SET;
     memcpy((&p_cb->req_mode[temp_pm_id]), p_mode, sizeof(tBTM_PM_PWR_MD));
     p_cb->chg_ind = true;
   }
 
-#if (BTM_PM_DEBUG == TRUE)
   BTM_TRACE_DEBUG("btm_pm state:0x%x, pm_pend_link: %d", p_cb->state,
                   btm_cb.pm_pend_link);
-#endif  // BTM_PM_DEBUG
   /* if mode == hold or pending, return */
   if ((p_cb->state == BTM_PM_STS_HOLD) || (p_cb->state == BTM_PM_STS_PENDING) ||
       (btm_cb.pm_pend_link != MAX_L2CAP_LINKS)) /* command pending */
@@ -574,8 +575,11 @@ static tBTM_STATUS btm_pm_snd_md_req(uint8_t pm_id, int link_ind,
   if (p_cb->state == mode) {
     /* already in the resulting mode */
     if ((mode == BTM_PM_MD_ACTIVE) ||
-        ((md_res.max >= p_cb->interval) && (md_res.min <= p_cb->interval)))
+        ((md_res.max >= p_cb->interval) && (md_res.min <= p_cb->interval))) {
+      BTM_TRACE_DEBUG("btm_pm_snd_md_req p_cb->chg_ind:%d, mode: %d", p_cb->chg_ind, mode);
+      p_cb->chg_ind = chg_ind;
       return BTM_CMD_STORED;
+    }
     /* Otherwise, needs to wake, then sleep */
     chg_ind = true;
   }

@@ -67,12 +67,17 @@
 #include "osi/include/osi.h"
 #include "port_api.h"
 #include "utl.h"
+#include "btif/include/btif_config.h"
+#include "device/include/interop_config.h"
 #include <cutils/properties.h>
 #if (TWS_AG_ENABLED == TRUE)
 #include "bta_ag_twsp_dev.h"
 #include "bta_ag_twsp.h"
 #endif
 #include "device/include/device_iot_config.h"
+#if (SWB_ENABLED == TRUE)
+#include "bta_ag_swb.h"
+#endif
 
 /*****************************************************************************
  *  Constants
@@ -260,13 +265,14 @@ void bta_ag_start_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
         // send ourselves close event for clean up
         bta_ag_cback_open(p_scb, NULL, BTA_AG_FAIL_RFCOMM);
         p_scb->state = 0;
+        p_scb->peer_addr = RawAddress::kEmpty;
         return;
       }
     }
     /* Let the incoming connection goes through.                        */
     /* Issue collision for this scb for now.                            */
     /* We will decide what to do when we find incoming connetion later. */
-    bta_ag_collision_cback(0, BTA_ID_AG, 0, &p_scb->peer_addr);
+    bta_ag_collision_cback(0, BTA_ID_AG, 0, p_scb->peer_addr);
     return;
   }
 
@@ -429,6 +435,9 @@ void bta_ag_rfc_fail(tBTA_AG_SCB* p_scb, UNUSED_ATTR tBTA_AG_DATA* p_data) {
   p_scb->peer_features = 0;
   p_scb->peer_codecs = BTA_AG_CODEC_CVSD;
   p_scb->sco_codec = BTA_AG_CODEC_CVSD;
+#if (SWB_ENABLED == TRUE)
+  p_scb->is_swb_codec = false;
+#endif
   p_scb->role = 0;
   p_scb->svc_conn = false;
   p_scb->hsp_version = HSP_VERSION_1_2;
@@ -467,6 +476,10 @@ void bta_ag_rfc_close(tBTA_AG_SCB* p_scb, UNUSED_ATTR tBTA_AG_DATA* p_data) {
   p_scb->codec_updated = false;
   p_scb->codec_fallback = false;
   p_scb->codec_msbc_settings = BTA_AG_SCO_MSBC_SETTINGS_T2;
+#if (SWB_ENABLED == TRUE)
+  p_scb->codec_swb_settings = BTA_AG_SCO_SWB_SETTINGS_Q0;
+  p_scb->is_swb_codec = false;
+#endif
   p_scb->role = 0;
   p_scb->post_sco = BTA_AG_POST_SCO_NONE;
   p_scb->svc_conn = false;
@@ -494,7 +507,7 @@ void bta_ag_rfc_close(tBTA_AG_SCB* p_scb, UNUSED_ATTR tBTA_AG_DATA* p_data) {
   (*bta_ag_cb.p_cback)(BTA_AG_CLOSE_EVT, (tBTA_AG*)&close);
 #if (TWS_AG_ENABLED == TRUE)
   if (is_twsp_device(p_scb->peer_addr)) {
-    reset_twsp_device(twsp_get_idx_by_scb(p_scb));
+      reset_twsp_device(twsp_get_idx_by_scb(p_scb));
   }
 #endif
 
@@ -591,7 +604,7 @@ void bta_ag_rfc_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
 #if (TWS_AG_ENABLED == TRUE)
     //Update TWS+ data structure
     if (is_twsp_device(p_scb->peer_addr)) {
-      update_twsp_device(p_scb);
+        update_twsp_device(p_scb);
     }
 #endif
   } else {
@@ -616,6 +629,7 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
   tBTA_AG_SCB *ag_scb;
   RawAddress dev_addr;
   int status;
+  uint16_t hfp_version = 0;
 
   /* set role */
   p_scb->role = BTA_AG_ACP;
@@ -637,6 +651,8 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
     if (ag_scb->in_use) {
 
       VLOG(1) << __func__ << "ag_scb addr:" << ag_scb->peer_addr;
+      APPL_TRACE_DEBUG("%s: bta_ag_cb.max_hf_clients: %d", __func__,
+                      bta_ag_cb.max_hf_clients);
       if (dev_addr == ag_scb->peer_addr) {
         if (bta_ag_cb.max_hf_clients > 1 && ag_scb != p_scb)
         {
@@ -671,10 +687,8 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
 
   /* determine connected service from port handle */
   for (i = 0; i < BTA_AG_NUM_IDX; i++) {
-    APPL_TRACE_DEBUG(
-        "bta_ag_rfc_acp_open: i = %d serv_handle = %d port_handle = %d", i,
-        p_scb->serv_handle[i], p_data->rfc.port_handle);
-
+    APPL_TRACE_DEBUG("%s: i = %d serv_handle = %d port_handle = %d", __func__, i,
+                      p_scb->serv_handle[i], p_data->rfc.port_handle);
     if (p_scb->serv_handle[i] == p_data->rfc.port_handle) {
       p_scb->conn_service = i;
       p_scb->conn_handle = p_data->rfc.port_handle;
@@ -682,15 +696,45 @@ void bta_ag_rfc_acp_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
     }
   }
 
-  APPL_TRACE_IMP("bta_ag_rfc_acp_open: conn_service = %d conn_handle = %d",
+  APPL_TRACE_IMP("%s: conn_service = %d conn_handle = %d", __func__,
                    p_scb->conn_service, p_scb->conn_handle);
 
   /* close any unopened server */
   bta_ag_close_servers(
       p_scb, (p_scb->reg_services & ~bta_ag_svc_mask[p_scb->conn_service]));
 
-  /* do service discovery to get features */
-  bta_ag_do_disc(p_scb, bta_ag_svc_mask[p_scb->conn_service]);
+  bool get_version = btif_config_get_uint16(
+                     p_scb->peer_addr.ToString().c_str(), HFP_VERSION_CONFIG_KEY,
+                     &hfp_version);
+  if (p_scb->conn_service == BTA_AG_HFP && get_version) {
+      p_scb->peer_version = hfp_version;
+      APPL_TRACE_DEBUG(
+       "%s: Avoid SDP for HFP device and fetch the peer_version: %04x "
+        "from config file", __func__, p_scb->peer_version);
+      /* Remote supports 1.7, store it in the file */
+      if (p_scb->peer_version == HFP_VERSION_1_7) {
+         APPL_TRACE_DEBUG("%s: version is 1.7, store in a file", __func__);
+         interop_database_add_addr(INTEROP_HFP_1_7_BLACKLIST,
+                          &p_scb->peer_addr, 3);
+      }
+#if (BT_IOT_LOGGING_ENABLED == TRUE)
+    device_iot_config_addr_set_hex_if_greater(p_scb->peer_addr,
+        IOT_CONF_KEY_HFP_VERSION, p_scb->peer_version, IOT_CONF_BYTE_NUM_2);
+#endif
+  } else {
+      //do service discovery to get features for HSP and also for HFP
+      //if the peer version can't be fetched from the config file
+
+      if (p_scb->conn_service == BTA_AG_HFP && !p_scb->peer_version)
+        p_scb->peer_version = HFP_VERSION_1_1;
+      else if (p_scb->conn_service == BTA_AG_HSP && !p_scb->peer_version)
+        p_scb->peer_version = HSP_VERSION_1_2;
+
+      APPL_TRACE_DEBUG(
+      "%s: Do SDP for HSP/version couldn't be fetched from the config file",
+       __func__);
+      bta_ag_do_disc(p_scb, bta_ag_svc_mask[p_scb->conn_service]);
+  }
 
   /* continue with common open processing */
   bta_ag_rfc_open(p_scb, p_data);
@@ -848,23 +892,42 @@ void bta_ag_post_sco_close(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
       break;
 
     case BTA_AG_POST_SCO_CALL_END:
-      bta_ag_send_call_inds(p_scb, BTA_AG_END_CALL_RES);
-      p_scb->post_sco = BTA_AG_POST_SCO_NONE;
+      for (size_t i = 0; i < BTA_AG_MAX_NUM_CLIENTS; i++) {
+        if (bta_ag_cb.scb[i].in_use &&
+            bta_ag_cb.scb[i].svc_conn &&
+            bta_ag_cb.scb[i].post_sco == BTA_AG_POST_SCO_CALL_END) {
+           bta_ag_send_call_inds(&bta_ag_cb.scb[i], BTA_AG_END_CALL_RES);
+           bta_ag_cb.scb[i].post_sco = BTA_AG_POST_SCO_NONE;
+           APPL_TRACE_IMP("%s: sending call end indicators after SCO close for scb" \
+              " on index %x, device %s",
+               __func__, i, bta_ag_cb.scb[i].peer_addr.ToString().c_str());
+        }
+      }
       break;
 
     case BTA_AG_POST_SCO_CALL_END_INCALL:
-      bta_ag_send_call_inds(p_scb, BTA_AG_END_CALL_RES);
+      for (size_t i = 0; i < BTA_AG_MAX_NUM_CLIENTS; i++) {
+        if (bta_ag_cb.scb[i].in_use &&
+            bta_ag_cb.scb[i].svc_conn &&
+            bta_ag_cb.scb[i].post_sco == BTA_AG_POST_SCO_CALL_END_INCALL) {
+          bta_ag_send_call_inds(&bta_ag_cb.scb[i], BTA_AG_END_CALL_RES);
 
-      /* Sending callsetup IND and Ring were defered to after SCO close. */
-      bta_ag_send_call_inds(p_scb, BTA_AG_IN_CALL_RES);
+          /* Sending callsetup IND and Ring were defered to after SCO close. */
+          bta_ag_send_call_inds(&bta_ag_cb.scb[i], BTA_AG_IN_CALL_RES);
+          APPL_TRACE_IMP("%s: sending call end and incoming indicators after SCO close for scb" \
+             " on index %x, device %s",
+             __func__, i, bta_ag_cb.scb[i].peer_addr.ToString().c_str());
 
-      if (bta_ag_inband_enabled(p_scb) &&
-          !(p_scb->features & BTA_AG_FEAT_NOSCO)) {
-        p_scb->post_sco = BTA_AG_POST_SCO_RING;
-        bta_ag_sco_open(p_scb, p_data);
-      } else {
-        p_scb->post_sco = BTA_AG_POST_SCO_NONE;
-        bta_ag_send_ring(p_scb, p_data);
+          if (bta_ag_inband_enabled(&bta_ag_cb.scb[i]) &&
+              !(bta_ag_cb.scb[i].features & BTA_AG_FEAT_NOSCO) &&
+              bta_ag_sco_is_active_device(bta_ag_cb.scb[i].peer_addr)) {
+            bta_ag_cb.scb[i].post_sco = BTA_AG_POST_SCO_RING;
+            bta_ag_sco_open(&bta_ag_cb.scb[i], p_data);
+          } else {
+            bta_ag_cb.scb[i].post_sco = BTA_AG_POST_SCO_NONE;
+            bta_ag_send_ring(&bta_ag_cb.scb[i], p_data);
+          }
+        }
       }
       break;
 
@@ -923,10 +986,12 @@ void bta_ag_svc_conn_open(tBTA_AG_SCB* p_scb,
         if (other_scb != NULL) {
             tBTA_AG_SCO_CB *related_sco = NULL;
             if (other_scb == bta_ag_cb.main_sm_scb) {
-                related_sco = &(bta_ag_cb.sco);
+                if (bta_ag_cb.sco.p_curr_scb == bta_ag_cb.main_sm_scb) {
+                    related_sco = &(bta_ag_cb.sco);
+                }
             } else if(other_scb == bta_ag_cb.sec_sm_scb) {
                 APPL_TRACE_DEBUG("%s:TWS+ peer SCO is selected", __func__);
-                related_sco = &(bta_ag_cb.twsp_sco);
+                related_sco = &(bta_ag_cb.twsp_sec_sco);
             } else {
                 APPL_TRACE_ERROR("%s: Invalid SCB", __func__);
             }
@@ -1011,17 +1076,28 @@ void bta_ag_setcodec(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
 
   /* Check if the requested codec type is valid */
   if ((codec_type != BTA_AG_CODEC_NONE) && (codec_type != BTA_AG_CODEC_CVSD) &&
-      (codec_type != BTA_AG_CODEC_MSBC)) {
+      (codec_type != BTA_AG_CODEC_MSBC)
+#if (SWB_ENABLED == TRUE)
+      && (codec_type != BTA_AG_SCO_SWB_SETTINGS_Q0)
+#endif
+    ) {
     val.num = codec_type;
     val.hdr.status = BTA_AG_FAIL_RESOURCES;
     APPL_TRACE_ERROR("bta_ag_setcodec error: unsupported codec type %d",
                      codec_type);
     (*bta_ag_cb.p_cback)(BTA_AG_WBS_EVT, (tBTA_AG*)&val);
+#if (SWB_ENABLED == TRUE)
+    (*bta_ag_cb.p_cback)(BTA_AG_SWB_EVT, (tBTA_AG*)&val);
+#endif
     return;
   }
 
   if ((p_scb->peer_codecs & codec_type) || (codec_type == BTA_AG_CODEC_NONE) ||
-      (codec_type == BTA_AG_CODEC_CVSD)) {
+      (codec_type == BTA_AG_CODEC_CVSD)
+#if (SWB_ENABLED == TRUE)
+      || (codec_type == BTA_AG_SCO_SWB_SETTINGS_Q0)
+#endif
+    ) {
     p_scb->sco_codec = codec_type;
     p_scb->codec_updated = true;
     val.num = codec_type;
@@ -1033,8 +1109,15 @@ void bta_ag_setcodec(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data) {
     APPL_TRACE_ERROR("bta_ag_setcodec error: unsupported codec type %d",
                      codec_type);
   }
-
-  (*bta_ag_cb.p_cback)(BTA_AG_WBS_EVT, (tBTA_AG*)&val);
+#if (SWB_ENABLED == TRUE)
+  if (codec_type == BTA_AG_SCO_SWB_SETTINGS_Q0)
+  {
+    (*bta_ag_cb.p_cback)(BTA_AG_SWB_EVT, (tBTA_AG*)&val);
+  } else
+#endif
+  {
+    (*bta_ag_cb.p_cback)(BTA_AG_WBS_EVT, (tBTA_AG*)&val);
+  }
 }
 
 void bta_ag_handle_collision(tBTA_AG_SCB* p_scb,

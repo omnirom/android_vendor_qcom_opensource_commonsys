@@ -555,17 +555,26 @@ bt_status_t btif_hh_virtual_unplug(const RawAddress* bd_addr) {
   p_dev = btif_hh_find_dev_by_bda(*bd_addr);
   if ((p_dev != NULL) && (p_dev->dev_status == BTHH_CONN_STATE_CONNECTED) &&
       (p_dev->attr_mask & HID_VIRTUAL_CABLE)) {
-    BTIF_TRACE_DEBUG("%s Sending BTA_HH_CTRL_VIRTUAL_CABLE_UNPLUG", __func__);
+    BTIF_TRACE_DEBUG("%s: Sending BTA_HH_CTRL_VIRTUAL_CABLE_UNPLUG for: %s", __func__, bd_str);
     /* start the timer */
     btif_hh_start_vup_timer(bd_addr);
     p_dev->local_vup = true;
     BTA_HhSendCtrl(p_dev->dev_handle, BTA_HH_CTRL_VIRTUAL_CABLE_UNPLUG);
+    return BT_STATUS_SUCCESS;
+  } else if ((p_dev != NULL) &&
+             (p_dev->dev_status == BTHH_CONN_STATE_CONNECTED)) {
+    BTIF_TRACE_ERROR("%s: Virtual unplug not suported, disconnecting device: %s",
+                     __func__, bd_str);
+    p_dev->local_vup = true;
+    BTA_HhClose(p_dev->dev_handle);
     return BT_STATUS_SUCCESS;
   } else {
     BTIF_TRACE_ERROR("%s: Error, device %s not opened, status = %d", __func__,
                      bd_addr->ToString().c_str(), btif_hh_cb.status);
     if ((btif_hh_cb.pending_conn_address == *bd_addr) &&
        (btif_hh_cb.status == BTIF_HH_DEV_CONNECTING)) {
+          HAL_CBACK(bt_hh_callbacks, connection_state_cb,
+              &btif_hh_cb.pending_conn_address, BTHH_CONN_STATE_DISCONNECTED);
           btif_hh_cb.status = (BTIF_HH_STATUS)BTIF_HH_DEV_DISCONNECTED;
           btif_hh_cb.pending_conn_address = RawAddress::kEmpty;
     }
@@ -632,11 +641,6 @@ bt_status_t btif_hh_connect(const RawAddress* bd_addr) {
   btif_hh_cb.status = BTIF_HH_DEV_CONNECTING;
   btif_hh_cb.pending_conn_address = *bd_addr;
   BTA_HhOpen(*bd_addr, BTA_HH_PROTO_RPT_MODE, sec_mask);
-
-  // TODO(jpawlowski); make cback accept const and remove tmp!
-  auto tmp = *bd_addr;
-  HAL_CBACK(bt_hh_callbacks, connection_state_cb, &tmp,
-            BTHH_CONN_STATE_CONNECTING);
   return BT_STATUS_SUCCESS;
 }
 
@@ -1182,6 +1186,13 @@ static void btif_hh_handle_evt(uint16_t event, char* p_param) {
   int ret;
   switch (event) {
     case BTIF_HH_CONNECT_REQ_EVT: {
+      /* Check if device not already connected via incoming connection */
+      if (btif_hh_find_connected_dev_by_bda(*bd_addr) != NULL) {
+        BTIF_TRACE_WARNING("%s: device already connected", __func__);
+        HAL_CBACK(bt_hh_callbacks, connection_state_cb, bd_addr,
+                  BTHH_CONN_STATE_CONNECTED);
+        break;
+      }
       ret = btif_hh_connect(bd_addr);
       if (ret == BT_STATUS_SUCCESS) {
         HAL_CBACK(bt_hh_callbacks, connection_state_cb, bd_addr,
@@ -1274,7 +1285,11 @@ static bt_status_t connect(RawAddress* bd_addr) {
     BTIF_TRACE_ERROR("%s: Error, HH status = %d", __func__, btif_hh_cb.status);
     return BT_STATUS_FAIL;
   }
-  if (btif_hh_cb.status != BTIF_HH_DEV_CONNECTING) {
+  if (btif_hh_cb.status == BTIF_HH_DEV_CONNECTED &&
+    btif_hh_find_connected_dev_by_bda(*bd_addr) != NULL) {
+    BTIF_TRACE_EVENT("%s Ignore connect request, device already connected", __func__);
+    return BT_STATUS_SUCCESS;
+  } else if (btif_hh_cb.status != BTIF_HH_DEV_CONNECTING) {
     btif_transfer_context(btif_hh_handle_evt, BTIF_HH_CONNECT_REQ_EVT,
                           (char*)bd_addr, sizeof(RawAddress), NULL);
     return BT_STATUS_SUCCESS;

@@ -44,6 +44,7 @@ const char* dev_path = "/dev/uhid";
 #define BTA_HH_NV_LOAD_MAX 16
 static tBTA_HH_RPT_CACHE_ENTRY sReportCache[BTA_HH_NV_LOAD_MAX];
 #endif
+#define BT_HID_RPT_OFFSET 9
 
 #define REPORT_DESC_REPORT_ID 0x05
 #define REPORT_DESC_DIGITIZER_PAGE 0x0D
@@ -217,14 +218,13 @@ static int uhid_read_event(btif_hh_device_t* p_dev) {
         btif_hh_setreport(p_dev, BTHH_FEATURE_REPORT, ev.u.output.size,
                           ev.u.output.data);
       else if (ev.u.output.rtype == UHID_OUTPUT_REPORT) {
-        if (ev.u.output.size > BTIF_HH_OUTPUT_REPORT_SIZE) {
+        if (ev.u.output.size > UHID_DATA_MAX) {
             APPL_TRACE_WARNING("UHID_OUTPUT: Invalid report size %d",
                 ev.u.output.size);
             return 0;
         }
-        if (ev.u.output.size == BTIF_HH_OUTPUT_REPORT_SIZE &&
-            !memcmp(&p_dev->last_output_rpt_data, &ev.u.output.data,
-            BTIF_HH_OUTPUT_REPORT_SIZE)) {
+        if (!memcmp(&p_dev->last_output_rpt_data, &ev.u.output.data,
+            ev.u.output.size)) {
             /* Last output report same as current output report, don't inform to remote
              * device as this could be the case when reports are being sent due to
              * device suspend/resume. If same output report is sent to remote device
@@ -265,8 +265,9 @@ static int uhid_read_event(btif_hh_device_t* p_dev) {
           " report id = %d",
           ev.u.set_report.rtype, ev.u.set_report.size, ev.u.set_report.id);
       if (p_dev->set_rpt_id_queue) {
-        void* set_rpt_id = (void*)&ev.u.set_report.id;
-        fixed_queue_enqueue(p_dev->set_rpt_id_queue, set_rpt_id);
+        uint32_t* set_rpt_id = (uint32_t *)osi_malloc(sizeof(uint32_t));
+        *set_rpt_id  = ev.u.set_report.id;
+        fixed_queue_enqueue(p_dev->set_rpt_id_queue, (void *)set_rpt_id);
       }
       if (ev.u.set_report.rtype == UHID_FEATURE_REPORT)
         btif_hh_setreport(p_dev, BTHH_FEATURE_REPORT, ev.u.set_report.size,
@@ -289,8 +290,9 @@ static int uhid_read_event(btif_hh_device_t* p_dev) {
       APPL_TRACE_DEBUG("UHID_GET_REPORT: Report type = %d",
                        ev.u.get_report.rtype);
       if (p_dev->get_rpt_id_queue) {
-        void* get_rpt_id = (void*)&ev.u.get_report.id;
-        fixed_queue_enqueue(p_dev->get_rpt_id_queue, get_rpt_id);
+        uint32_t* get_rpt_id = (uint32_t*)osi_malloc(sizeof(uint32_t));
+        *get_rpt_id = ev.u.get_report.id;
+        fixed_queue_enqueue(p_dev->get_rpt_id_queue, (void *)get_rpt_id);
       }
       if (ev.u.get_report.rtype == UHID_FEATURE_REPORT)
         btif_hh_getreport(p_dev, BTHH_FEATURE_REPORT, ev.u.get_report.rnum, 0);
@@ -509,7 +511,7 @@ void bta_hh_co_open(uint8_t dev_handle, uint8_t sub_class,
   }
 
   p_dev->dev_status = BTHH_CONN_STATE_CONNECTED;
-  memset(&p_dev->last_output_rpt_data, 0, BTIF_HH_OUTPUT_REPORT_SIZE);
+  memset(&p_dev->last_output_rpt_data, 0, UHID_DATA_MAX);
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 18, 00))
   p_dev->set_rpt_id_queue = fixed_queue_new(SIZE_MAX);
   CHECK(p_dev->set_rpt_id_queue);
@@ -547,8 +549,10 @@ void bta_hh_co_close(uint8_t dev_handle, uint8_t app_id) {
   for (i = 0; i < BTIF_HH_MAX_HID; i++) {
     p_dev = &btif_hh_cb.devices[i];
 #if (LINUX_VERSION_CODE > KERNEL_VERSION(3, 18, 00))
+    fixed_queue_flush(p_dev->set_rpt_id_queue, osi_free);
     fixed_queue_free(p_dev->set_rpt_id_queue, NULL);
     p_dev->set_rpt_id_queue = NULL;
+    fixed_queue_flush(p_dev->get_rpt_id_queue, osi_free);
     fixed_queue_free(p_dev->get_rpt_id_queue, NULL);
     p_dev->get_rpt_id_queue = NULL;
 #endif  //  (LINUX_VERSION_CODE > KERNEL_VERSION(3,18,00))
@@ -558,7 +562,7 @@ void bta_hh_co_close(uint8_t dev_handle, uint8_t app_id) {
           "%s: Found an existing device with the same handle "
           "dev_status = %d, dev_handle =%d",
           __func__, p_dev->dev_status, p_dev->dev_handle);
-      memset(&p_dev->last_output_rpt_data, 0, BTIF_HH_OUTPUT_REPORT_SIZE);
+      memset(&p_dev->last_output_rpt_data, 0, UHID_DATA_MAX);
       btif_hh_close_poll_thread(p_dev);
       break;
     }
@@ -725,6 +729,7 @@ void bta_hh_co_set_rpt_rsp(uint8_t dev_handle, uint8_t status) {
       return;
   }
 
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
   memset(&ev, 0, sizeof(ev));
   ev.type = UHID_SET_REPORT_REPLY;
   /* get the report id from queue_start pointer */
@@ -733,6 +738,8 @@ void bta_hh_co_set_rpt_rsp(uint8_t dev_handle, uint8_t status) {
                      ev.u.set_report_reply.id);
   ev.u.set_report_reply.err = status;
   uhid_write(p_dev->fd, &ev);
+#endif //OFF_TARGET_TEST_ENABLED
+  osi_free(set_rpt_id);
 }
 
 /*******************************************************************************
@@ -775,6 +782,7 @@ void bta_hh_co_get_rpt_rsp(uint8_t dev_handle, uint8_t status, uint8_t* p_rpt,
       return;
   }
 
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
   memset(&ev, 0, sizeof(ev));
   ev.type = UHID_GET_REPORT_REPLY;
   ev.u.get_report_reply.err = status;
@@ -788,9 +796,11 @@ void bta_hh_co_get_rpt_rsp(uint8_t dev_handle, uint8_t status, uint8_t* p_rpt,
       APPL_TRACE_WARNING("%s: Report size greater than allowed size", __func__);
       return;
     }
-    memcpy(ev.u.get_report_reply.data, p_rpt, len);
+    memcpy(ev.u.get_report_reply.data, p_rpt + BT_HID_RPT_OFFSET, len);
   }
   uhid_write(p_dev->fd, &ev);
+#endif
+  osi_free(get_rpt_id);
 }
 
 #if (BTA_HH_LE_INCLUDED == TRUE)

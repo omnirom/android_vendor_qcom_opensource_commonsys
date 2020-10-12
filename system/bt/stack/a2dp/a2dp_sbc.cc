@@ -34,11 +34,11 @@
 #include <base/logging.h>
 #include "a2dp_sbc_encoder.h"
 #include "bt_utils.h"
-#include "embdrv/sbc/encoder/include/sbc_encoder.h"
+#include <sbc_encoder.h>
 #include "osi/include/log.h"
 #include "osi/include/osi.h"
-#define A2DP_SBC_MAX_BITPOOL 53
 
+#define A2DP_SBC_MAX_BITPOOL 53
 /* data type for the SBC Codec Information Element */
 typedef struct {
   uint8_t samp_freq;    /* Sampling frequency */
@@ -85,7 +85,7 @@ static const tA2DP_SBC_CIE a2dp_sbc_sink_caps = {
     (A2DP_SBC_IE_SUBBAND_4 | A2DP_SBC_IE_SUBBAND_8),   /* num_subbands */
     (A2DP_SBC_IE_ALLOC_MD_L | A2DP_SBC_IE_ALLOC_MD_S), /* alloc_method */
     A2DP_SBC_IE_MIN_BITPOOL,                           /* min_bitpool */
-    A2DP_SBC_MAX_BITPOOL,                              /* max_bitpool */
+    A2DP_SBC_SINK_MAX_BITPOOL,                         /* max_bitpool */
     BTAV_A2DP_CODEC_BITS_PER_SAMPLE_16                 /* bits_per_sample */
 };
 /* Default SBC codec configuration */
@@ -355,19 +355,19 @@ static tA2DP_STATUS A2DP_CodecInfoMatchesCapabilitySbc(
 
   /* verify that each parameter is in range */
 
-  LOG_VERBOSE(LOG_TAG, "%s: FREQ peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: FREQ peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.samp_freq, p_cap->samp_freq);
-  LOG_VERBOSE(LOG_TAG, "%s: CH_MODE peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: CH_MODE peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.ch_mode, p_cap->ch_mode);
-  LOG_VERBOSE(LOG_TAG, "%s: BLOCK_LEN peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: BLOCK_LEN peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.block_len, p_cap->block_len);
-  LOG_VERBOSE(LOG_TAG, "%s: SUB_BAND peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: SUB_BAND peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.num_subbands, p_cap->num_subbands);
-  LOG_VERBOSE(LOG_TAG, "%s: ALLOC_METHOD peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: ALLOC_METHOD peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.alloc_method, p_cap->alloc_method);
-  LOG_VERBOSE(LOG_TAG, "%s: MIN_BitPool peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: MIN_BitPool peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.min_bitpool, p_cap->min_bitpool);
-  LOG_VERBOSE(LOG_TAG, "%s: MAX_BitPool peer: 0x%x, capability 0x%x", __func__,
+  LOG_DEBUG(LOG_TAG, "%s: MAX_BitPool peer: 0x%x, capability 0x%x", __func__,
               cfg_cie.max_bitpool, p_cap->max_bitpool);
 
   /* sampling frequency */
@@ -401,6 +401,7 @@ tA2DP_STATUS A2DP_BuildSrc2SinkConfigSbc(const uint8_t* p_src_cap,
   tA2DP_SBC_CIE src_cap;
   tA2DP_SBC_CIE pref_cap;
 
+  LOG_DEBUG(LOG_TAG, "%s: ", __func__);
   /* initialize it to default SBC configuration */
   A2DP_BuildInfoSbc(AVDT_MEDIA_TYPE_AUDIO, &a2dp_sbc_default_config,
                     p_pref_cfg);
@@ -1004,16 +1005,12 @@ btav_a2dp_codec_index_t A2DP_SourceCodecIndexSbc(
   return BTAV_A2DP_CODEC_INDEX_SOURCE_SBC;
 }
 
-btav_a2dp_codec_index_t A2DP_SinkCodecIndexSbc(
-    UNUSED_ATTR const uint8_t* p_codec_info) {
-  return BTAV_A2DP_CODEC_INDEX_SINK_SBC;
-}
-
 const char* A2DP_CodecIndexStrSbc(void) { return "SBC"; }
 
 const char* A2DP_CodecIndexStrSbcSink(void) { return "SBC SINK"; }
 
 bool A2DP_InitCodecConfigSbc(tAVDT_CFG* p_cfg) {
+  LOG_DEBUG(LOG_TAG,"%s:",__func__);
   if (A2DP_BuildInfoSbc(AVDT_MEDIA_TYPE_AUDIO, &a2dp_sbc_caps,
                         p_cfg->codec_info) != A2DP_SUCCESS) {
     return false;
@@ -1031,6 +1028,7 @@ bool A2DP_InitCodecConfigSbc(tAVDT_CFG* p_cfg) {
 }
 
 bool A2DP_InitCodecConfigSbcSink(tAVDT_CFG* p_cfg) {
+  LOG_DEBUG(LOG_TAG,"%s",__func__);
   if (A2DP_BuildInfoSbc(AVDT_MEDIA_TYPE_AUDIO, &a2dp_sbc_sink_caps,
                         p_cfg->codec_info) != A2DP_SUCCESS) {
     return false;
@@ -1061,8 +1059,8 @@ A2dpCodecConfigSbc::A2dpCodecConfigSbc(
     btav_a2dp_codec_priority_t codec_priority)
     : A2dpCodecConfig(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC, "SBC", codec_priority) {
   LOG_DEBUG(LOG_TAG,"%s",__func__);
-  if (A2DP_GetOffloadStatus() && !(A2DP_IsScramblingSupported() ||
-                                   A2DP_Is44p1kFreqSupported())) {
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC) &&
+    !(A2DP_IsScramblingSupported() || A2DP_Is44p1kFreqSupported())) {
       a2dp_sbc_caps = a2dp_sbc_offload_caps;
       a2dp_sbc_default_config = a2dp_sbc_offload_default_config;
   }
@@ -1097,15 +1095,16 @@ A2dpCodecConfigSbc::~A2dpCodecConfigSbc() {}
 bool A2dpCodecConfigSbc::init() {
   if (!isValid()) return false;
 
-  if (A2DP_GetOffloadStatus()) {
-    if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
-      LOG_ERROR(LOG_TAG, "%s: SBC enabled in offload mode", __func__);
-      return true;
-    }else {
-      LOG_ERROR(LOG_TAG, "%s: SBC disabled in offload mode", __func__);
-      return false;
-    }
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
+    LOG_DEBUG(LOG_TAG, "%s: SBC enabled in HW mode", __func__);
+    return true;
+  } else if(!A2DP_IsCodecEnabledInSoftware(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
+    LOG_DEBUG(LOG_TAG, "%s: SBC disabled in both SW and HW mode", __func__);
+    return false;
+  } else {
+    LOG_DEBUG(LOG_TAG, "%s: SBC enabled in SW mode", __func__);
   }
+
   // Load the encoder
   if (!A2DP_LoadEncoderSbc()) {
     LOG_ERROR(LOG_TAG, "%s: cannot load the encoder", __func__);
@@ -1243,6 +1242,9 @@ static bool select_best_channel_mode(uint8_t ch_mode, tA2DP_SBC_CIE* p_result,
 static bool select_audio_channel_mode(
     const btav_a2dp_codec_config_t* p_codec_audio_config, uint8_t ch_mode,
     tA2DP_SBC_CIE* p_result, btav_a2dp_codec_config_t* p_codec_config) {
+  LOG_DEBUG(LOG_TAG,
+              "%s: p_codec_audio_config->channel_mode = 0x%x ",
+              __func__, p_codec_audio_config->channel_mode);
   switch (p_codec_audio_config->channel_mode) {
     case BTAV_A2DP_CODEC_CHANNEL_MODE_MONO:
       if (ch_mode & A2DP_SBC_IE_CH_MD_MONO) {
@@ -1310,6 +1312,9 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
               __func__, status);
     goto fail;
   }
+
+  LOG_DEBUG(LOG_TAG, "%s: is_capability = %d", __func__, is_capability);
+
   // Try using the prefered peer codec config (if valid), instead of the peer
   // capability.
   if (is_capability && A2DP_IsPeerSinkCodecValidSbc(ota_codec_peer_config_)) {
@@ -1317,7 +1322,7 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
     if (status != A2DP_SUCCESS) {
       // Use the peer codec capability
       status =
-          A2DP_ParseInfoSbc(&sink_info_cie, p_peer_codec_info, is_capability);
+           A2DP_ParseInfoSbc(&sink_info_cie, p_peer_codec_info, is_capability);
       CHECK(status == A2DP_SUCCESS);
     }
   }
@@ -1465,6 +1470,12 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
   //
   ch_mode = a2dp_sbc_caps.ch_mode & sink_info_cie.ch_mode;
   codec_config_.channel_mode = BTAV_A2DP_CODEC_CHANNEL_MODE_NONE;
+  LOG_DEBUG(LOG_TAG,
+              "%s: channel_mode: source caps = 0x%x "
+              "sink info = 0x%x, ch_mode = 0x%x, "
+              " codec_user_config_.channel_mode = 0x%x",
+              __func__, a2dp_sbc_caps.ch_mode, sink_info_cie.ch_mode, ch_mode,
+              codec_user_config_.channel_mode);
   switch (codec_user_config_.channel_mode) {
     case BTAV_A2DP_CODEC_CHANNEL_MODE_MONO:
       if (ch_mode & A2DP_SBC_IE_CH_MD_MONO) {
@@ -1519,7 +1530,10 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
           BTAV_A2DP_CODEC_CHANNEL_MODE_STEREO;
     }
 
-    if (codec_config_.channel_mode != BTAV_A2DP_CODEC_CHANNEL_MODE_NONE) break;
+    if (codec_config_.channel_mode != BTAV_A2DP_CODEC_CHANNEL_MODE_NONE) {
+      LOG_DEBUG(LOG_TAG, "%s: Valid channel mode has been selected. ", __func__);
+      break;
+    }
 
     // Compute the common capability
     if (ch_mode & A2DP_SBC_IE_CH_MD_MONO)
@@ -1532,6 +1546,7 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
     // No user preference - use the codec audio config
     if (select_audio_channel_mode(&codec_audio_config_, ch_mode,
                                   &result_config_cie, &codec_config_)) {
+      LOG_DEBUG(LOG_TAG, "%s: No user preference - use the codec audio config ", __func__);
       break;
     }
 
@@ -1539,11 +1554,13 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
     if (select_best_channel_mode(
             a2dp_sbc_default_config.ch_mode & sink_info_cie.ch_mode,
             &result_config_cie, &codec_config_)) {
+      LOG_DEBUG(LOG_TAG, "%s: No user preference - try the default config ", __func__);
       break;
     }
 
     // No user preference - use the best match
     if (select_best_channel_mode(ch_mode, &result_config_cie, &codec_config_)) {
+      LOG_DEBUG(LOG_TAG, "%s: No user preference - use the best match ", __func__);
       break;
     }
   } while (false);
@@ -1554,6 +1571,9 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
               __func__, a2dp_sbc_caps.ch_mode, sink_info_cie.ch_mode);
     goto fail;
   }
+
+  LOG_DEBUG(LOG_TAG, "%s: codec_selectable_capability_: ", __func__);
+  print_codec_parameters(codec_selectable_capability_);
 
   //
   // Select the block length
@@ -1645,12 +1665,64 @@ bool A2dpCodecConfigSbc::setCodecConfig(const uint8_t* p_peer_codec_info,
   // Create a local copy of the peer codec capability/config, and the
   // result codec config.
   if (is_capability) {
-    memcpy(ota_codec_peer_capability_, p_peer_codec_info,
-           sizeof(ota_codec_peer_capability_));
+    tA2DP_STATUS status =
+        A2DP_ParseInfoSbc(&sink_info_cie, p_peer_codec_info, true);
+    if (status != A2DP_SUCCESS) {
+      LOG_ERROR(LOG_TAG, "%s: can't parse peer's capabilities: error = %d",
+                __func__, status);
+      goto fail;
+    }
+
+    LOG_DEBUG(LOG_TAG,
+           "%s:  sink_info_cie.samp_freq: 0x%x, a2dp_sbc_caps.samp_freq: 0x%x",
+             __func__, sink_info_cie.samp_freq, a2dp_sbc_caps.samp_freq);
+    // Compute the selectable capability - sample rate
+    samp_freq = a2dp_sbc_caps.samp_freq & sink_info_cie.samp_freq;
+    if (samp_freq & A2DP_SBC_IE_SAMP_FREQ_44) {
+      codec_selectable_capability_.sample_rate |=
+          BTAV_A2DP_CODEC_SAMPLE_RATE_44100;
+    }
+    if (samp_freq & A2DP_SBC_IE_SAMP_FREQ_48) {
+      codec_selectable_capability_.sample_rate |=
+          BTAV_A2DP_CODEC_SAMPLE_RATE_48000;
+    }
+
+    // Compute the selectable capability - bits per sample
+    codec_selectable_capability_.bits_per_sample =
+        a2dp_sbc_caps.bits_per_sample;
+
+    LOG_DEBUG(LOG_TAG,
+           "%s: a2dp_sbc_caps.ch_mode: 0x%x, sink_info_cie.ch_mode: 0x%x",
+             __func__, a2dp_sbc_caps.ch_mode, sink_info_cie.ch_mode);
+    // Compute the selectable capability - channel mode
+    ch_mode = a2dp_sbc_caps.ch_mode & sink_info_cie.ch_mode;
+    if (ch_mode & A2DP_SBC_IE_CH_MD_MONO) {
+      codec_selectable_capability_.channel_mode |=
+          BTAV_A2DP_CODEC_CHANNEL_MODE_MONO;
+    }
+    if (ch_mode & A2DP_SBC_IE_CH_MD_JOINT) {
+      codec_selectable_capability_.channel_mode |=
+          BTAV_A2DP_CODEC_CHANNEL_MODE_STEREO;
+    }
+    if (ch_mode & A2DP_SBC_IE_CH_MD_STEREO) {
+      codec_selectable_capability_.channel_mode |=
+          BTAV_A2DP_CODEC_CHANNEL_MODE_STEREO;
+    }
+    if (ch_mode & A2DP_SBC_IE_CH_MD_DUAL) {
+      codec_selectable_capability_.channel_mode |=
+          BTAV_A2DP_CODEC_CHANNEL_MODE_STEREO;
+    }
+
+    LOG_DEBUG(LOG_TAG, "%s: Final codec_selectable_capability_: ", __func__);
+    print_codec_parameters(codec_selectable_capability_);
+
+    status = A2DP_BuildInfoSbc(AVDT_MEDIA_TYPE_AUDIO, &sink_info_cie,
+                               ota_codec_peer_capability_);
   } else {
-    memcpy(ota_codec_peer_config_, p_peer_codec_info,
-           sizeof(ota_codec_peer_config_));
+    status = A2DP_BuildInfoSbc(AVDT_MEDIA_TYPE_AUDIO, &sink_info_cie,
+                               ota_codec_peer_config_);
   }
+  CHECK(status == A2DP_SUCCESS);
   status = A2DP_BuildInfoSbc(AVDT_MEDIA_TYPE_AUDIO, &result_config_cie,
                              ota_codec_config_);
   CHECK(status == A2DP_SUCCESS);
@@ -1670,6 +1742,7 @@ fail:
          sizeof(ota_codec_peer_config_));
   return false;
 }
+
 A2dpCodecConfigSbcSink::A2dpCodecConfigSbcSink(
     btav_a2dp_codec_priority_t codec_priority)
     : A2dpCodecConfig(BTAV_A2DP_CODEC_INDEX_SINK_SBC, "SBC(Sink)",

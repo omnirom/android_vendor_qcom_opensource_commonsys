@@ -71,21 +71,13 @@
 #define BTIF_HF_CLIENT_SECURITY (BTA_SEC_AUTHENTICATE | BTA_SEC_ENCRYPT)
 #endif
 
-#if (BTIF_HF_CLIENT_WBS_INCLUDED == TRUE)
 #ifndef BTIF_HF_CLIENT_FEATURES
 #define BTIF_HF_CLIENT_FEATURES                                                \
   (BTA_HF_CLIENT_FEAT_ECNR | BTA_HF_CLIENT_FEAT_3WAY |                         \
    BTA_HF_CLIENT_FEAT_CLI | BTA_HF_CLIENT_FEAT_VREC | BTA_HF_CLIENT_FEAT_VOL | \
    BTA_HF_CLIENT_FEAT_ECS | BTA_HF_CLIENT_FEAT_ECC | BTA_HF_CLIENT_FEAT_CODEC)
 #endif
-#else
-#ifndef BTIF_HF_CLIENT_FEATURES
-#define BTIF_HF_CLIENT_FEATURES                                                \
-  (BTA_HF_CLIENT_FEAT_ECNR | BTA_HF_CLIENT_FEAT_3WAY |                         \
-   BTA_HF_CLIENT_FEAT_CLI | BTA_HF_CLIENT_FEAT_VREC | BTA_HF_CLIENT_FEAT_VOL | \
-   BTA_HF_CLIENT_FEAT_ECS | BTA_HF_CLIENT_FEAT_ECC)
-#endif
-#endif
+
 
 static const char* dump_hf_client_conn_state(uint16_t event) {
   switch (event) {
@@ -1006,6 +998,10 @@ static void btif_hf_client_upstreams_evt(uint16_t event, char* p_param) {
       break;
     case BTA_HF_CLIENT_RING_INDICATION:
       HAL_CBACK(bt_hf_client_callbacks, ring_indication_cb, &cb->peer_bda);
+      break;
+    case BTA_HF_CLIENT_UNKNOWN_EVT:
+      HAL_CBACK(bt_hf_client_callbacks, unknown_event_cb, &cb->peer_bda,
+                p_data->unknown.event_string);
       break;
     default:
       BTIF_TRACE_WARNING("%s: Unhandled event: %d", __func__, event);

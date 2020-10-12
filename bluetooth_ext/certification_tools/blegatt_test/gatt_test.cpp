@@ -2221,7 +2221,7 @@ static tL2CAP_APPL_INFO l2test_l2c_appl = {
 void bdt_init(void)
 {
     bdt_log("INIT BT ");
-    status = sBtInterface->init(&bt_callbacks, false, false);
+    status = sBtInterface->init(&bt_callbacks, false, false, 0);
     if (status == BT_STATUS_SUCCESS) {
         // Get Vendor Interface
         btvendorInterface = (btvendor_interface_t *)sBtInterface->get_profile_interface(BT_PROFILE_VENDOR_ID);
@@ -2758,7 +2758,7 @@ void do_le_client_configureMTU(char *p)
     tGATT_STATUS Ret =0;
     uint16_t mtu = 23;
 
-    mtu  = get_int(&p, -1);
+    mtu  = (uint16_t)get_int(&p, -1);
     printf("%s:: mtu :%d\n", __FUNCTION__, mtu);
     Ret = sGattInterface->cConfigureMTU(g_conn_id, mtu);
     printf("%s:: Ret=%d \n", __FUNCTION__, Ret);
@@ -3258,9 +3258,9 @@ static void do_start_advertisment(char *p)
 
 uint16_t do_le_l2cap_coc_flow_ctrl(char *p)
 {
-    uint16_t lcid = get_int(&p, -1);
+    uint16_t lcid = (uint16_t)get_int(&p, -1);
 
-    uint16_t credits = get_int(&p, -1);
+    uint16_t credits = (uint16_t)get_int(&p, -1);
 
     printf("\ndo_le_l2cap_coc_flow_ctrl lcid = %d, credits = %d\n", lcid, credits);
     return sL2capInterface->LeFlowControl(lcid, credits);
@@ -3276,7 +3276,7 @@ uint16_t do_le_l2cap_coc_connect(char *p)
     int le_initiator_sec_level;
     uint16_t le_coc_seclevel = 0;
     RawAddress bd_addr = {{0}};
-    uint16_t le_psm = get_int(&p, -1);
+    uint16_t le_psm = (uint16_t)get_int(&p, -1);
 
 
     t_le_chnl_info *le_conn_info = le_allocate_conn_info(le_psm, FALSE);
@@ -3399,7 +3399,7 @@ static int send_file(char *p)
     char tmpBuf[LE_ACL_MAX_BUFF_SIZE];
     uint16_t lcid;
 
-    lcid = get_int(&p, -1);
+    lcid = (uint16_t)get_int(&p, -1);
     t_le_chnl_info *le_conn_info = le_get_conn_info_by_lcid(lcid);
     GetFileName(p, filename);
 
@@ -3454,7 +3454,7 @@ static int Send_Data(char *p)
     int send_mode;
     uint16_t lcid;
 
-    lcid = get_int(&p, -1);
+    lcid = (uint16_t)get_int(&p, -1);
     send_mode = get_int(&p, -1);
 
     char tmpBuffer_1[] = {
@@ -3499,7 +3499,7 @@ static void do_send_file(char *svr)
 
 bool le_coc_disc(char *p)
 {
-    uint16_t cid = get_int(&p, -1);
+    uint16_t cid = (uint16_t)get_int(&p, -1);
     return sL2capInterface->DisconnectReq(cid);
 }
 
@@ -3542,7 +3542,7 @@ void do_smp_security_grant(char *p)
     uint8_t    res;
     RawAddress bd_addr = {{0}};
     if(FALSE == GetBdAddr(p, &bd_addr))    return; //arg1
-    res = get_int(&p, -1); // arg2
+    res = (uint8_t)get_int(&p, -1); // arg2
     sSmpIface->SecurityGrant(bd_addr.address, res);
     printf("%s:: Ret=%d \n", __FUNCTION__,res);
 }
@@ -3554,7 +3554,7 @@ void do_smp_passkey_reply(char *p)
     RawAddress bd_addr = {{0}};
     if(FALSE == GetBdAddr(p, &bd_addr))    return; //arg1
         printf("get res value\n");
-    res = get_int(&p, -1); // arg2
+    res = (uint8_t)get_int(&p, -1); // arg2
         printf("res value=%d\n", res);
     passkey = get_int(&p, -1); // arg3
         printf("passkey value=%d\n", passkey);
@@ -3568,7 +3568,7 @@ void do_smp_encrypt(char *p)
     uint8_t    res;
     RawAddress bd_addr = {{0}};
     if(FALSE == GetBdAddr(p, &bd_addr))    return; //arg1
-    res = get_int(&p, -1); // arg2
+    res = (uint8_t)get_int(&p, -1); // arg2
     printf("%s:: res =%d Ret=%d \n", __FUNCTION__,res, Ret);
 }
 
@@ -3663,7 +3663,7 @@ void do_l2cap_send_data_cid(char *p)
     uint16_t         Ret = 0;
     RawAddress bd_addr = {{0}};
     if(FALSE == GetBdAddr(p, &bd_addr))    return; //arg1
-    cid = get_int(&p, -1); // arg2
+    cid = (uint16_t)get_int(&p, -1); // arg2
 
     bt_hdr.event     = 0;
     bt_hdr.len         = 1;

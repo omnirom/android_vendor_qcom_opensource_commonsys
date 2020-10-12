@@ -191,25 +191,80 @@ static void btif_vendor_send_iot_info_cb(uint16_t event, char *p_param)
 }
 
 void btif_vendor_update_add_on_features() {
-    uint8_t add_on_features_len = 0;
-    bt_vendor_property_t vnd_prop;
-    char buf[8];
-    vnd_prop.len = 0;
     const controller_t* controller = controller_get_interface();
-    if(controller) {
-        const bt_device_features_t* dev_features = controller->get_add_on_features(
-                                    &add_on_features_len);
 
-        vnd_prop.type = BT_VENDOR_PROPERTY_SOC_ADD_ON_FEATURES;
-        vnd_prop.val = (void*)buf;
-        if(dev_features && add_on_features_len > 0) {
-            vnd_prop.len = add_on_features_len;
-            memcpy(vnd_prop.val, dev_features, add_on_features_len);
+    if (controller) {
+        uint8_t soc_add_on_features_len = 0;
+        uint8_t host_add_on_features_len = 0;
+        bt_vendor_property_t vnd_prop;
+        char s_buf[SOC_ADD_ON_FEATURES_MAX_SIZE];
+        char h_buf[HOST_ADD_ON_FEATURES_MAX_SIZE];
+        const bt_device_soc_add_on_features_t* soc_add_on_features =
+            controller->get_soc_add_on_features(&soc_add_on_features_len);
+        const bt_device_host_add_on_features_t* host_add_on_features =
+            controller->get_host_add_on_features(&host_add_on_features_len);
+
+        if (soc_add_on_features && soc_add_on_features_len > 0) {
+            vnd_prop.len = soc_add_on_features_len;
+            vnd_prop.type = BT_VENDOR_PROPERTY_SOC_ADD_ON_FEATURES;
+            vnd_prop.val = (void*)s_buf;
+            memcpy(vnd_prop.val, soc_add_on_features, soc_add_on_features_len);
+            HAL_CBACK(bt_vendor_callbacks, adapter_vendor_prop_cb,
+                     BT_STATUS_SUCCESS, 1, &vnd_prop);
         }
-        HAL_CBACK(bt_vendor_callbacks, adapter_vendor_prop_cb,
-                               BT_STATUS_SUCCESS, 1, &vnd_prop);
+
+        if (host_add_on_features && host_add_on_features_len > 0) {
+            vnd_prop.len = host_add_on_features_len;
+            vnd_prop.type = BT_VENDOR_PROPERTY_HOST_ADD_ON_FEATURES;
+            vnd_prop.val = (void*)h_buf;
+            memcpy(vnd_prop.val, host_add_on_features, host_add_on_features_len);
+            HAL_CBACK(bt_vendor_callbacks, adapter_vendor_prop_cb,
+                     BT_STATUS_SUCCESS, 1, &vnd_prop);
+        }
     }
 }
+
+
+void btif_vendor_update_whitelisted_media_players() {
+    uint8_t num_wlplayers = 0;
+    uint8_t i = 0, buf_len = 0;
+    bt_vendor_property_t wlplayers_prop;
+    list_t *wl_players = list_new(osi_free);
+    LOG_DEBUG(LOG_TAG,"btif_vendor_update_whitelisted_media_players");
+
+    wlplayers_prop.len = 0;
+    if (fetch_whitelisted_media_players(&wl_players)) {
+        num_wlplayers = list_length(wl_players);
+        LOG_DEBUG(LOG_TAG,"%s: %d - WL media players found", __func__, num_wlplayers);
+
+        /* Now send the callback */
+        if (num_wlplayers > 0) {
+            /*find the total number of bytes and allocate memory */
+            for (list_node_t* node = list_begin(wl_players);
+                     node != list_end(wl_players); node = list_next(node)) {
+                 buf_len += (strlen((char *)list_node(node)) + 1);
+            }
+            char *players_list = (char*)osi_malloc(buf_len);
+            for (list_node_t* node = list_begin(wl_players);
+                     node != list_end(wl_players); node = list_next(node)) {
+                char * name ;
+                name = (char *)list_node(node);
+                memcpy(&players_list[i], list_node(node), strlen(name) + 1);
+                i +=  (strlen(name) + 1);
+            }
+            wlplayers_prop.type = BT_VENDOR_PROPERTY_WL_MEDIA_PLAYERS_LIST;
+            wlplayers_prop.len = buf_len;
+            wlplayers_prop.val =  players_list;
+
+            HAL_CBACK(bt_vendor_callbacks,  wl_players_prop_cb,
+                                       BT_STATUS_SUCCESS, 1, &wlplayers_prop);
+            osi_free(players_list);
+        }
+   } else {
+        LOG_DEBUG(LOG_TAG,"%s: Whitelisted media players not found", __func__);
+   }
+}
+
 
 void btif_broadcast_timer_cb(UNUSED_ATTR void *data) {
     btif_transfer_context(btif_vendor_send_iot_info_cb, 1, NULL, 0, NULL);

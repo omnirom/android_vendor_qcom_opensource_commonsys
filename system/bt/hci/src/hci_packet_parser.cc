@@ -107,7 +107,7 @@ static void parse_read_scrambling_supported_freqs_response(
 }
 
 static void parse_read_add_on_features_supported_response(
-    BT_HDR* response, bt_device_features_t* supported_add_on_features,
+    BT_HDR* response, bt_device_soc_add_on_features_t* supported_add_on_features,
     uint8_t *valid_bytes, uint16_t* product_id, uint16_t* response_version) {
 
   uint8_t* ptr = response->data + response->offset;
@@ -123,6 +123,19 @@ static void parse_read_add_on_features_supported_response(
     *valid_bytes = parameter_length - 8;
     STREAM_TO_ARRAY(supported_add_on_features->as_array, stream, *valid_bytes);
   }
+
+  buffer_allocator->free(response);
+}
+
+static void parse_read_local_simple_paring_options_response(
+    BT_HDR* response, uint8_t* simple_pairing_options,
+    uint8_t* maximum_encryption_key_size) {
+  uint8_t* stream = read_command_complete_header(
+      response, HCI_READ_LOCAL_SIMPLE_PAIRING_OPTIONS, 2 /* bytes after */);
+
+  CHECK(stream != NULL);
+  STREAM_TO_UINT8(*simple_pairing_options, stream);
+  STREAM_TO_UINT8(*maximum_encryption_key_size, stream);
 
   buffer_allocator->free(response);
 }
@@ -324,7 +337,9 @@ static const hci_packet_parser_t interface = {
     parse_read_local_supported_codecs_response,
     parse_ble_read_offload_features_response,
     parse_read_scrambling_supported_freqs_response,
-    parse_read_add_on_features_supported_response};
+    parse_read_add_on_features_supported_response,
+    parse_read_local_simple_paring_options_response,
+};
 
 const hci_packet_parser_t* hci_packet_parser_get_interface() {
   buffer_allocator = buffer_allocator_get_interface();

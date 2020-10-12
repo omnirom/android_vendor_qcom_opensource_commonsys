@@ -52,6 +52,10 @@
 #include "btif_dm.h"
 #include "btu.h"
 #include "btif_av.h"
+#include "btif_twsp_hf.h"
+#if (SWB_ENABLED == TRUE)
+#include "bta_ag_swb.h"
+#endif
 
 /*******************************************************************************
  *  Constants & Macros
@@ -195,6 +199,9 @@ const char* dump_hf_event(uint16_t event) {
     CASE_RETURN_STR(BTA_AG_AT_CKPD_EVT)
     CASE_RETURN_STR(BTA_AG_DISABLE_EVT)
     CASE_RETURN_STR(BTA_AG_WBS_EVT)
+#if (SWB_ENABLED == TRUE)
+    CASE_RETURN_STR(BTA_AG_SWB_EVT)
+#endif
     CASE_RETURN_STR(BTA_AG_AT_A_EVT)
     CASE_RETURN_STR(BTA_AG_AT_D_EVT)
     CASE_RETURN_STR(BTA_AG_AT_CHLD_EVT)
@@ -215,7 +222,7 @@ const char* dump_hf_event(uint16_t event) {
     CASE_RETURN_STR(BTA_AG_AT_BCS_EVT)
     CASE_RETURN_STR(BTA_AG_AT_BIND_EVT)
     CASE_RETURN_STR(BTA_AG_AT_BIEV_EVT)
-
+    CASE_RETURN_STR(BTA_AG_TWSP_BATTERY_UPDATE)
     default:
       return "UNKNOWN MSG ID";
   }

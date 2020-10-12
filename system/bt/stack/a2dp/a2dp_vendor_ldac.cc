@@ -55,8 +55,7 @@ static const tA2DP_LDAC_CIE a2dp_ldac_caps = {
     (A2DP_LDAC_SAMPLING_FREQ_44100 | A2DP_LDAC_SAMPLING_FREQ_48000 |
      A2DP_LDAC_SAMPLING_FREQ_88200 | A2DP_LDAC_SAMPLING_FREQ_96000),
     // channelMode
-    (A2DP_LDAC_CHANNEL_MODE_DUAL | A2DP_LDAC_CHANNEL_MODE_STEREO |
-    A2DP_LDAC_CHANNEL_MODE_MONO),
+    (A2DP_LDAC_CHANNEL_MODE_DUAL | A2DP_LDAC_CHANNEL_MODE_STEREO),
     // bits_per_sample
     (BTAV_A2DP_CODEC_BITS_PER_SAMPLE_16 | BTAV_A2DP_CODEC_BITS_PER_SAMPLE_24 |
      BTAV_A2DP_CODEC_BITS_PER_SAMPLE_32)};
@@ -315,6 +314,10 @@ bool A2DP_VendorCodecEqualsLdac(const uint8_t* p_codec_info_a,
 
 int A2DP_VendorGetBitRateLdac(const uint8_t* p_codec_info) {
   A2dpCodecConfig* current_codec = bta_av_get_a2dp_current_codec();
+  if (current_codec == nullptr) {
+    LOG_ERROR(LOG_TAG, "%s: Failed to get current a2dp codec", __func__);
+    return 0;
+  }
   btav_a2dp_codec_config_t codec_config_ = current_codec->getCodecConfig();
   int samplerate = A2DP_GetTrackSampleRate(p_codec_info);
   switch (codec_config_.codec_specific_1) {
@@ -508,12 +511,11 @@ btav_a2dp_codec_index_t A2DP_VendorSourceCodecIndexLdac(
 const char* A2DP_VendorCodecIndexStrLdac(void) { return "LDAC"; }
 
 bool A2DP_VendorInitCodecConfigLdac(tAVDT_CFG* p_cfg) {
-  if (A2DP_GetOffloadStatus()) {
-    if (!A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC)){
-      LOG_ERROR(LOG_TAG, "%s: LDAC disabled in offload mode", __func__);
-      return false;
-    }
+  if (!A2DP_IsCodecEnabled(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC)){
+    LOG_ERROR(LOG_TAG, "%s: LDAC disabled in both SW and HW mode", __func__);
+    return false;
   }
+
   if (A2DP_BuildInfoLdac(AVDT_MEDIA_TYPE_AUDIO, &a2dp_ldac_caps,
                          p_cfg->codec_info) != A2DP_SUCCESS) {
     return false;
@@ -560,7 +562,7 @@ A2dpCodecConfigLdac::A2dpCodecConfigLdac(
     : A2dpCodecConfig(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC, "LDAC",
                       codec_priority) {
   // Compute the local capability
-  if (A2DP_GetOffloadStatus()) {
+  if (!A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC)) {
     a2dp_ldac_default_config = a2dp_ldac_offload_default_config;
   } else {
     a2dp_ldac_default_config = a2dp_ldac_src_default_config;
@@ -600,15 +602,16 @@ A2dpCodecConfigLdac::~A2dpCodecConfigLdac() {}
 bool A2dpCodecConfigLdac::init() {
   if (!isValid()) return false;
 
-  if (A2DP_GetOffloadStatus()) {
-    if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC)){
-      LOG_ERROR(LOG_TAG,"%s: LDAC enabled in offload mode",__func__);
-      return true;
-    } else {
-      LOG_ERROR(LOG_TAG, "%s: LDAC disabled in offload mode", __func__);
-      return false;
-    }
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC)) {
+    LOG_DEBUG(LOG_TAG, "%s: LDAC enabled in HW mode", __func__);
+    return true;
+  } else if(!A2DP_IsCodecEnabledInSoftware(BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC)){
+    LOG_DEBUG(LOG_TAG, "%s: LDAC disabled in both SW and HW mode", __func__);
+    return false;
+  } else {
+    LOG_DEBUG(LOG_TAG, "%s: LDAC enabled in SW mode", __func__);
   }
+
   // Load the encoder
   if (!A2DP_VendorLoadEncoderLdac()) {
     LOG_ERROR(LOG_TAG, "%s: cannot load the encoder", __func__);
@@ -905,9 +908,9 @@ bool A2dpCodecConfigLdac::setCodecConfig(const uint8_t* p_peer_codec_info,
          sizeof(ota_codec_peer_capability_));
   memcpy(saved_ota_codec_peer_config, ota_codec_peer_config_,
          sizeof(ota_codec_peer_config_));
-  print_ldac_codec_config(saved_ota_codec_config);
-  print_ldac_codec_config(saved_ota_codec_peer_capability);
-  print_ldac_codec_config(saved_ota_codec_peer_config);
+  //print_ldac_codec_config(saved_ota_codec_config);
+  //print_ldac_codec_config(saved_ota_codec_peer_capability);
+  //print_ldac_codec_config(saved_ota_codec_peer_config);
 
   tA2DP_STATUS status =
       A2DP_ParseInfoLdac(&sink_info_cie, p_peer_codec_info, is_capability);
@@ -972,6 +975,7 @@ bool A2dpCodecConfigLdac::setCodecConfig(const uint8_t* p_peer_codec_info,
         codec_capability_.sample_rate = codec_user_config_.sample_rate;
         codec_config_.sample_rate = codec_user_config_.sample_rate;
       }
+      break;
     case BTAV_A2DP_CODEC_SAMPLE_RATE_NONE:
       codec_capability_.sample_rate = BTAV_A2DP_CODEC_SAMPLE_RATE_NONE;
       codec_config_.sample_rate = BTAV_A2DP_CODEC_SAMPLE_RATE_NONE;

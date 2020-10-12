@@ -48,10 +48,9 @@
 #include "osi/include/properties.h"
 #include "osi/include/reactor.h"
 #include "packet_fragmenter.h"
+#include "controller.h"
 
 #define BT_HCI_TIMEOUT_TAG_NUM 1010000
-
-bt_soc_type soc_type;
 
 extern void hci_initialize();
 extern hci_transmit_status_t hci_transmit(BT_HDR* packet);
@@ -76,6 +75,13 @@ typedef struct {
 // Reducing startup timeout to less than 3sec to ensure that wakelock is aquired
 // during initialization
 #define DEFAULT_STARTUP_TIMEOUT_MS 2900
+// Increased STARTUP time to 11.9 sec for default XMEM patch download.
+#define DEFAULT_XMEM_STARTUP_TIMEOUT_MS    11900
+/* Increased STARTUP time to 19.9 sec for XMEM patch with download configuration
+ * set to have rsp for every tlv download cmd.
+ */
+#define XMEM_STARTUP_TIMEOUT_MS    19900
+
 #define STRING_VALUE_OF(x) #x
 
 // RT priority for HCI thread
@@ -115,7 +121,7 @@ static list_t* commands_pending_response;
 static std::recursive_mutex commands_pending_response_mutex;
 
 // The hand-off point for data going to a higher layer, set by the higher layer
-static base::Callback<void(const tracked_objects::Location&, BT_HDR*)>
+static base::Callback<void(const base::Location&, BT_HDR*)>
     send_data_upwards;
 
 static bool filter_incoming_event(BT_HDR* packet);
@@ -147,7 +153,7 @@ void initialization_complete() {
       FROM_HERE, base::Bind(&event_finish_startup, nullptr));
 }
 
-void hci_event_received(const tracked_objects::Location& from_here,
+void hci_event_received(const base::Location& from_here,
                         BT_HDR* packet) {
   btsnoop->capture(packet, true);
 
@@ -202,12 +208,22 @@ static future_t* hci_module_start_up(void) {
   // For now, always use the default timeout on non-Android builds.
   period_ms_t startup_timeout_ms = DEFAULT_STARTUP_TIMEOUT_MS;
 
+  char prop_value[PROPERTY_VALUE_MAX];
+  // Check if XMEM enabled, if yes override startup timeout
+  if (osi_property_get("persist.vendor.bluetooth.enable_XMEM", prop_value,"0") &&
+      ((strcmp(prop_value, "1") == 0) || (strcmp(prop_value, "2") == 0))) {
+    LOG_DEBUG(LOG_TAG, "%s: XMEM download enabled: %s", __func__, prop_value);
+    if (strcmp(prop_value, "1") == 0)
+      startup_timeout_ms = DEFAULT_XMEM_STARTUP_TIMEOUT_MS;
+    else
+      startup_timeout_ms = XMEM_STARTUP_TIMEOUT_MS;
+  }
   // Grab the override startup timeout ms, if present.
-  char timeout_prop[PROPERTY_VALUE_MAX];
-  if (!osi_property_get("bluetooth.enable_timeout_ms", timeout_prop,
+  else if (!osi_property_get("bluetooth.enable_timeout_ms", prop_value,
                         STRING_VALUE_OF(DEFAULT_STARTUP_TIMEOUT_MS)) ||
-      (startup_timeout_ms = atoi(timeout_prop)) < 100)
+      (startup_timeout_ms = atoi(prop_value)) < 100) {
     startup_timeout_ms = DEFAULT_STARTUP_TIMEOUT_MS;
+  }
 
   startup_timer = alarm_new("hci.startup_timer");
   if (!startup_timer) {
@@ -319,7 +335,7 @@ EXPORT_SYMBOL extern const module_t hci_module = {
 // Interface functions
 
 static void set_data_cb(
-    base::Callback<void(const tracked_objects::Location&, BT_HDR*)>
+    base::Callback<void(const base::Location&, BT_HDR*)>
         send_data_cb) {
   send_data_upwards = std::move(send_data_cb);
 }
@@ -379,7 +395,11 @@ static void transmit_downward(uint16_t type, void* data) {
 static void event_finish_startup(UNUSED_ATTR void* context) {
   LOG_INFO(LOG_TAG, "%s", __func__);
   std::lock_guard<std::recursive_mutex> lock(commands_pending_response_mutex);
-  alarm_cancel(startup_timer);
+  if (alarm_is_scheduled(startup_timer)) {
+    alarm_cancel(startup_timer);
+  } else {
+    LOG_DEBUG(LOG_TAG,"%s startup_timer not scheduled", __func__);
+  }
   // added null check if startup_future has become null
   // due to timer expiry
   // eventually it will lead to command timeout incase timer expires
@@ -741,7 +761,12 @@ static void update_command_response_timer(void) {
 
   if (command_response_timer == NULL) return;
   if (list_is_empty(commands_pending_response)) {
-    alarm_cancel(command_response_timer);
+    if (alarm_is_scheduled(command_response_timer)) {
+      alarm_cancel(command_response_timer);
+    } else {
+      LOG_DEBUG(LOG_TAG,"%s command_response_timer not scheduled",
+                __func__);
+    }
   } else {
     alarm_set(command_response_timer, COMMAND_PENDING_TIMEOUT_MS,
               command_timed_out, list_front(commands_pending_response));
@@ -752,7 +777,6 @@ static void init_layer_interface() {
   if (!interface_created) {
     // It's probably ok for this to live forever. It's small and
     // there's only one instance of the hci interface.
-    soc_type = get_soc_type();
 
     interface.set_data_cb = set_data_cb;
     interface.transmit_command = transmit_command;

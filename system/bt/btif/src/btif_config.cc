@@ -22,6 +22,7 @@
 
 #include <base/logging.h>
 #include <ctype.h>
+#include <openssl/rand.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -36,6 +37,7 @@
 #include "btif_common.h"
 #include "btif_config_transcode.h"
 #include "btif_util.h"
+#include "common/address_obfuscator.h"
 #include "osi/include/alarm.h"
 #include "osi/include/allocator.h"
 #include "osi/include/compat.h"
@@ -51,6 +53,10 @@
 #define FILE_SOURCE "FileSource"
 #define TIME_STRING_LENGTH sizeof("YYYY-MM-DD HH:MM:SS")
 static const char* TIME_STRING_FORMAT = "%Y-%m-%d %H:%M:%S";
+
+#define BT_CONFIG_METRICS_SECTION "Metrics"
+#define BT_CONFIG_METRICS_SALT_256BIT "Salt256Bit"
+using bluetooth::common::AddressObfuscator;
 
 // TODO(armansito): Find a better way than searching by a hardcoded path.
 #if defined(OS_GENERIC)
@@ -114,14 +120,51 @@ bool btif_get_address_type(const RawAddress& bda, int* p_addr_type) {
   return true;
 }
 
-static std::mutex config_lock;  // protects operations on |config|.
 static config_t* config;
+/**
+ * Read metrics salt from config file, if salt is invalid or does not exist,
+ * generate new one and save it to config
+ */
+static void read_or_set_metrics_salt() {
+  AddressObfuscator::Octet32 metrics_salt = {};
+  size_t metrics_salt_length = metrics_salt.size();
+  if (!btif_config_get_bin(BT_CONFIG_METRICS_SECTION,
+                           BT_CONFIG_METRICS_SALT_256BIT, metrics_salt.data(),
+                           &metrics_salt_length)) {
+    LOG(WARNING) << __func__ << ": Failed to read metrics salt from config";
+    // Invalidate salt
+    metrics_salt.fill(0);
+  }
+  if (metrics_salt_length != metrics_salt.size()) {
+    LOG(ERROR) << __func__ << ": Metrics salt length incorrect, "
+               << metrics_salt_length << " instead of " << metrics_salt.size();
+    // Invalidate salt
+    metrics_salt.fill(0);
+  }
+  if (!AddressObfuscator::IsSaltValid(metrics_salt)) {
+    LOG(INFO) << __func__ << ": Metrics salt is not invalid, creating new one";
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
+    //TODO need to resolve below dependency
+    if (RAND_bytes(metrics_salt.data(), metrics_salt.size()) != 1) {
+      LOG(FATAL) << __func__ << "Failed to generate salt for metrics";
+    }
+#endif
+    if (!btif_config_set_bin(BT_CONFIG_METRICS_SECTION,
+                             BT_CONFIG_METRICS_SALT_256BIT, metrics_salt.data(),
+                             metrics_salt.size())) {
+      LOG(FATAL) << __func__ << "Failed to write metrics salt to config";
+    }
+  }
+  AddressObfuscator::GetInstance()->Initialize(metrics_salt);
+}
+
+static std::recursive_mutex config_lock;  // protects operations on |config|.
 static alarm_t* config_timer;
 
 // Module lifecycle functions
 
 static future_t* init(void) {
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
 
   if (is_factory_reset()) delete_config_files();
 
@@ -153,13 +196,13 @@ static future_t* init(void) {
     file_source = "Empty";
   }
 
-  if (!file_source.empty())
-    config_set_string(config, INFO_SECTION, FILE_SOURCE, file_source.c_str());
-
   if (!config) {
     LOG_ERROR(LOG_TAG, "%s unable to allocate a config object.", __func__);
     goto error;
   }
+
+  if (!file_source.empty())
+    config_set_string(config, INFO_SECTION, FILE_SOURCE, file_source.c_str());
 
   btif_config_remove_unpaired(config);
 
@@ -182,6 +225,9 @@ static future_t* init(void) {
       }
     }
   }
+
+  // Read or set metrics 256 bit hashing salt
+  read_or_set_metrics_salt();
 
   // TODO(sharvil): use a non-wake alarm for this once we have
   // API support for it. There's no need to wake the system to
@@ -229,7 +275,7 @@ static future_t* clean_up(void) {
   alarm_free(config_timer);
   config_timer = NULL;
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   config_free(config);
   config = NULL;
   return future_new_immediate(FUTURE_SUCCESS);
@@ -245,7 +291,7 @@ bool btif_config_has_section(const char* section) {
   CHECK(config != NULL);
   CHECK(section != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   return config_has_section(config, section);
 }
 
@@ -254,7 +300,7 @@ bool btif_config_exist(const char* section, const char* key) {
   CHECK(section != NULL);
   CHECK(key != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   return config_has_key(config, section, key);
 }
 
@@ -264,23 +310,75 @@ bool btif_config_get_int(const char* section, const char* key, int* value) {
   CHECK(key != NULL);
   CHECK(value != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   bool ret = config_has_key(config, section, key);
   if (ret) *value = config_get_int(config, section, key, *value);
 
   return ret;
 }
 
+bool btif_config_get_uint16(const char* section, const char* key, uint16_t* value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+  CHECK(value != NULL);
+
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
+  bool ret = config_has_key(config, section, key);
+  if (ret) *value = config_get_uint16(config, section, key, *value);
+
+  return ret;
+}
+
+bool btif_config_get_uint64(const char* section, const char* key,
+                            uint64_t* value) {
+  CHECK(config != NULL);
+  CHECK(value != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
+  bool ret = config_has_key(config, section, key);
+  if (ret) *value = config_get_uint64(config, section, key, *value);
+
+  return ret;
+}
+
+
 bool btif_config_set_int(const char* section, const char* key, int value) {
   CHECK(config != NULL);
   CHECK(section != NULL);
   CHECK(key != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   config_set_int(config, section, key, value);
 
   return true;
 }
+
+bool btif_config_set_uint16(const char* section, const char* key, uint16_t value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
+  config_set_uint16(config, section, key, value);
+
+  return true;
+}
+
+bool btif_config_set_uint64(const char* section, const char* key,
+                            uint64_t value) {
+  CHECK(config != NULL);
+  CHECK(section != NULL);
+  CHECK(key != NULL);
+
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
+  config_set_uint64(config, section, key, value);
+
+  return true;
+}
+
 
 bool btif_config_get_str(const char* section, const char* key, char* value,
                          int* size_bytes) {
@@ -291,7 +389,7 @@ bool btif_config_get_str(const char* section, const char* key, char* value,
   CHECK(size_bytes != NULL);
 
   {
-    std::unique_lock<std::mutex> lock(config_lock);
+    std::unique_lock<std::recursive_mutex> lock(config_lock);
     const char* stored_value = config_get_string(config, section, key, NULL);
     if (!stored_value) return false;
     strlcpy(value, stored_value, *size_bytes);
@@ -308,7 +406,7 @@ bool btif_config_set_str(const char* section, const char* key,
   CHECK(key != NULL);
   CHECK(value != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   config_set_string(config, section, key, value);
   return true;
 }
@@ -321,10 +419,14 @@ bool btif_config_get_bin(const char* section, const char* key, uint8_t* value,
   CHECK(value != NULL);
   CHECK(length != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   const char* value_str = config_get_string(config, section, key, NULL);
 
-  if (!value_str) return false;
+  if (!value_str) {
+    VLOG(2)  << __func__ << ": cannot find string for section " << section
+                 << ", key " << key;
+    return false;
+  }
 
   size_t value_len = strlen(value_str);
   if ((value_len % 2) != 0 || *length < (value_len / 2)) return false;
@@ -343,7 +445,7 @@ size_t btif_config_get_bin_length(const char* section, const char* key) {
   CHECK(section != NULL);
   CHECK(key != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   const char* value_str = config_get_string(config, section, key, NULL);
   if (!value_str) return 0;
 
@@ -369,7 +471,7 @@ bool btif_config_set_bin(const char* section, const char* key,
   }
 
   {
-    std::unique_lock<std::mutex> lock(config_lock);
+    std::unique_lock<std::recursive_mutex> lock(config_lock);
     config_set_string(config, section, key, str);
   }
 
@@ -407,7 +509,7 @@ bool btif_config_remove(const char* section, const char* key) {
   CHECK(section != NULL);
   CHECK(key != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   return config_remove_key(config, section, key);
 }
 
@@ -432,7 +534,7 @@ bool btif_config_clear(void) {
 
   alarm_cancel(config_timer);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   config_free(config);
 
   config = config_new_empty();
@@ -455,12 +557,15 @@ static void btif_config_write(UNUSED_ATTR uint16_t event,
   CHECK(config != NULL);
   CHECK(config_timer != NULL);
 
-  std::unique_lock<std::mutex> lock(config_lock);
+  std::unique_lock<std::recursive_mutex> lock(config_lock);
   rename(CONFIG_FILE_PATH, CONFIG_BACKUP_PATH);
   config_t* config_paired = config_new_clone(config);
-  btif_config_remove_unpaired(config_paired);
-  config_save(config_paired, CONFIG_FILE_PATH);
-  config_free(config_paired);
+
+  if (config_paired != NULL) {
+    btif_config_remove_unpaired(config_paired);
+    config_save(config_paired, CONFIG_FILE_PATH);
+    config_free(config_paired);
+  }
 }
 
 static void btif_config_remove_unpaired(config_t* conf) {
@@ -480,7 +585,10 @@ static void btif_config_remove_unpaired(config_t* conf) {
           !config_has_key(conf, section, "LE_KEY_PCSRK") &&
           !config_has_key(conf, section, "LE_KEY_LENC") &&
           !config_has_key(conf, section, "LE_KEY_LCSRK") &&
-          !config_has_key(conf, section, "TwsPlusPeerAddr")) {
+          !config_has_key(conf, section, "AvrcpCtVersion") &&
+          !config_has_key(conf, section, "AvrcpFeatures") &&
+          !config_has_key(conf, section, "TwsPlusPeerAddr") &&
+          !config_has_key(conf, section, "Codecs")) {
         snode = config_section_next(snode);
         config_remove_section(conf, section);
         continue;

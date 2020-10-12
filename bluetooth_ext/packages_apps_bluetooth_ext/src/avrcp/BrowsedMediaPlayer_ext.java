@@ -26,10 +26,6 @@ import android.media.browse.MediaBrowser.MediaItem;
 import android.media.session.MediaSession;
 import android.os.Bundle;
 import android.util.Log;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.Looper;
-import android.os.Message;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -52,11 +48,6 @@ class BrowsedMediaPlayer_ext {
     private static final int CONNECTED = 1;
     private static final int SUSPENDED = 2;
 
-    private static final int MSG_CONNECT_PLAYER = 1;
-    private static final int MSG_DISCONNECT_PLAYER = 2;
-    private static final int MSG_TIMEOUT = 3;
-
-    private static final int TIMEOUT = 3000;
     private static final int BROWSED_ITEM_ID_INDEX = 2;
     private static final int BROWSED_FOLDER_ID_INDEX = 4;
     private static final String[] ROOT_FOLDER = {"root"};
@@ -76,9 +67,6 @@ class BrowsedMediaPlayer_ext {
 
     private String mCurrentBrowsePackage;
     private String mCurrentBrowseClass;
-
-    private BrowseMediaHandler mHandler = null;
-    private HandlerThread mHandlerThread;
 
     /* Object used to connect to MediaBrowseService of Media Player */
     private MediaBrowser mMediaBrowser = null;
@@ -106,45 +94,6 @@ class BrowsedMediaPlayer_ext {
 
     /* store result of getfolderitems with scope="vfs" */
     private List<MediaBrowser.MediaItem> mFolderItems = null;
-    private List<String> mBrowsablePlayerList = new ArrayList<String>();
-
-    class BrowseMediaHandler extends Handler {
-        BrowseMediaHandler(Looper looper) {
-            super(looper);
-        }
-
-        @Override
-        public void handleMessage(Message msg) {
-            Log.w(TAG, "handleMessage " + msg.what + " obj " + msg.obj);
-            switch (msg.what) {
-                case MSG_CONNECT_PLAYER:
-                    Bundle data = msg.getData();
-                    String packageName = data.getCharSequence("package").toString();
-                    String cls = data.getCharSequence("class").toString();
-                    Log.w(TAG, "package = " + packageName + " svc class " + cls);
-                    MediaConnectionCallback callback = new MediaConnectionCallback(packageName);
-                    MediaBrowser tempBrowser = new MediaBrowser(
-                            mContext, new ComponentName(packageName, cls), callback, null);
-                    callback.setBrowser(tempBrowser);
-                    tempBrowser.connect();
-                    Log.w(TAG, "TryconnectMBS with Browser service");
-                    Message m = mHandler.obtainMessage(MSG_TIMEOUT, 0, 0, packageName);
-                    mHandler.sendMessageDelayed(m, TIMEOUT);
-                    break;
-                case MSG_DISCONNECT_PLAYER:
-                    MediaBrowser mb = (MediaBrowser)msg.obj;
-                    Log.w(TAG, "Trigger disconnect for MediaBrowser " + mb);
-                    if (mb != null)
-                        mb.disconnect();
-                    break;
-                case MSG_TIMEOUT:
-                    Log.w(TAG, "MSG_TIMEOUT");
-                    break;
-                default:
-                    break;
-           }
-       }
-    };
 
     /* Connection state callback handler */
     class MediaConnectionCallback extends MediaBrowser.ConnectionCallback {
@@ -163,16 +112,6 @@ class BrowsedMediaPlayer_ext {
         @Override
         public void onConnected() {
             Log.d(TAG, "Onconnected pkg " + mCallbackPackageName + " mb " + mBrowser);
-            if ((mHandler != null) && !mBrowsablePlayerList.contains(mCallbackPackageName)
-                    && mHandler.hasMessages(MSG_TIMEOUT, mCallbackPackageName)) {
-                Log.d(TAG, "Add " + mCallbackPackageName + " to MBS List " + mBrowsablePlayerList);
-                mBrowsablePlayerList.add(mCallbackPackageName);
-                mHandler.removeMessages(MSG_TIMEOUT, mCallbackPackageName);
-                Message msg = mHandler.obtainMessage(MSG_DISCONNECT_PLAYER, 0, 0, mBrowser);
-                mHandler.sendMessage(msg);
-                mBrowser = null;
-                return;
-            }
             mConnState = CONNECTED;
             Log.d(TAG, "mediaBrowser CONNECTED to " + mPackageName);
             /* perform init tasks and set player as browsed player on successful connection */
@@ -185,12 +124,6 @@ class BrowsedMediaPlayer_ext {
         @Override
         public void onConnectionFailed() {
             Log.d(TAG, "Onconnectedfail pkg " + mCallbackPackageName + " mb " + mBrowser);
-            if ((mHandler != null) && !mBrowsablePlayerList.contains(mCallbackPackageName)
-                    && mHandler.hasMessages(MSG_TIMEOUT, mCallbackPackageName)) {
-                mHandler.removeMessages(MSG_TIMEOUT, mCallbackPackageName);
-                mBrowser = null;
-                return;
-            }
             mConnState = DISCONNECTED;
             mTempMediaBrowser = null;
             // Remove what could be a circular dependency causing GC to never happen on this object
@@ -204,12 +137,6 @@ class BrowsedMediaPlayer_ext {
         @Override
         public void onConnectionSuspended() {
             Log.d(TAG, "Onconnectedsuspend pkg " + mCallbackPackageName + " mb " + mBrowser);
-            if ((mHandler != null) && !mBrowsablePlayerList.contains(mCallbackPackageName)
-                    && mHandler.hasMessages(MSG_TIMEOUT, mCallbackPackageName)) {
-                mHandler.removeMessages(MSG_TIMEOUT, mCallbackPackageName);
-                mBrowser = null;
-                return;
-            }
             mBrowser = null;
             mTempMediaBrowser = null;
             mConnState = SUSPENDED;
@@ -234,10 +161,21 @@ class BrowsedMediaPlayer_ext {
                      */
                     if (mFolderItems == null) {
                         Log.w(TAG, "sending setbrowsed player rsp");
-                        mFolderItems = children;
-                        mMediaInterface.setBrowsedPlayerRsp(mBDAddr, AvrcpConstants_ext.RSP_NO_ERROR,
-                                (byte) 0x00, children.size(), ROOT_FOLDER);
-                        RespondPendingGetFolderItemsVFS();
+                        if (children.size() > 0) {
+                            mFolderItems = children;
+                            mMediaInterface.setBrowsedPlayerRsp(mBDAddr,
+                                    AvrcpConstants_ext.RSP_NO_ERROR,
+                                    (byte) 0x00, children.size(), ROOT_FOLDER);
+                            RespondPendingGetFolderItemsVFS();
+                        } else {
+                            Log.w(TAG, "No Children Loaded, disconnect MBS and return error");
+                            mMediaInterface.setBrowsedPlayerRsp(mBDAddr,
+                                    AvrcpConstants_ext.RSP_PLAY_NOT_BROW,
+                                    (byte) 0x00, 0, null);
+                            RespondPendingGetFolderItemsVFS();
+                            mMediaBrowser.disconnect();
+                            return;
+                        }
                     } else {
                         mFolderItems = children;
                         mCurrFolderNumItems = mFolderItems.size();
@@ -567,95 +505,18 @@ class BrowsedMediaPlayer_ext {
         Log.w(TAG, "Reconnected with Browser service");
     }
 
-    public void updateBrowsablePlayerList(String packageName) {
-        if (packageName == null || packageName.isEmpty())
-            return;
-        if (mBrowsablePlayerList.contains(packageName)) {
-            Log.w(TAG, "Remove pkg" + packageName + "from list" + mBrowsablePlayerList);
-            mBrowsablePlayerList.remove(packageName);
-        }
-    }
-
-    public void CheckMBSConnection(String packageName, String cls) {
-        Log.w(TAG, "TryconnectMBS with Browser service for package = " + packageName);
-        if (mBrowsablePlayerList.contains(packageName)) {
-            Log.w(TAG, "Already in MBS List don't reconnect" + mBrowsablePlayerList);
-            return;
-        }
-        if (mHandler != null) {
-            Message msg = mHandler.obtainMessage(MSG_CONNECT_PLAYER);
-            Bundle data = new Bundle();
-            data.putCharSequence("package", packageName);
-            data.putCharSequence("class", cls);
-            msg.setData(data);
-            mHandler.sendMessage(msg);
-            Log.w(TAG, "Exit MSG_CONNECT_PLAYER for package = " + packageName);
-        }
-    }
-
-    public boolean isPackageInMBSList(String packageName) {
-        if (packageName == null || packageName.isEmpty())
-            return false;
-        Log.w(TAG, "isPlayerConnectedMBS for package = " + packageName);
-
-        // Wait while pending messages are in queue
-        while ((mHandler != null) && (mHandler.hasMessages(MSG_CONNECT_PLAYER)
-                || mHandler.hasMessages(MSG_TIMEOUT))) {
-            try {
-                Log.d(TAG, "Connection with MBS ongoing, sleep for 200 ms and recheck");
-                Thread.sleep(200);
-            } catch (InterruptedException e) {
-                Log.w(TAG, "Interrupt sleep caught Exception");
-            }
-        }
-
-        Log.w(TAG, "List of Browse supported players = " + mBrowsablePlayerList);
-        for (String pkg : mBrowsablePlayerList) {
-            if (packageName.equals(pkg))
-                return true;
-        }
-        return false;
-    }
-
     public void setCurrentPackage(String packageName, String cls) {
         Log.w(TAG, "Set current Browse based on Addr Player as " + packageName);
         mCurrentBrowsePackage = packageName;
         mCurrentBrowseClass = cls;
     }
 
-    public void start() {
-        if (mHandler == null) {
-            Log.w(TAG, "start");
-            mHandlerThread = new HandlerThread("BrowseMediaHandler");
-            mHandlerThread.start();
-            mHandler = new BrowseMediaHandler(mHandlerThread.getLooper());
-        }
-        Log.w(TAG, "start exit");
-    }
-
     /* called when connection to media player is closed */
     public void cleanup() {
-        disconnect();
         if (DEBUG) {
             Log.d(TAG, "cleanup");
         }
-        mBrowsablePlayerList.clear();
-        if (mHandler != null) {
-            Log.d(TAG, "cleanup handlers");
-            mHandler.removeCallbacksAndMessages(null);
-            Looper looper = mHandler.getLooper();
-            if (looper != null)
-                looper.quit();
-        }
-        if (mHandlerThread != null) {
-            mHandlerThread.quitSafely();
-        }
-    }
 
-    public void disconnect() {
-        if (DEBUG) {
-            Log.d(TAG, "disconnect");
-        }
         if (mConnState != DISCONNECTED) {
             if (mMediaBrowser != null) mMediaBrowser.disconnect();
         }

@@ -173,7 +173,7 @@
 #endif
 
 #ifndef BTA_DM_SDP_DB_SIZE
-#define BTA_DM_SDP_DB_SIZE 8000
+#define BTA_DM_SDP_DB_SIZE 16000
 #endif
 
 #ifndef HL_INCLUDED
@@ -428,7 +428,7 @@
 
 /* The number of SCO links. */
 #ifndef BTM_MAX_SCO_LINKS
-#define BTM_MAX_SCO_LINKS 3
+#define BTM_MAX_SCO_LINKS 6
 #endif
 
 /* The preferred type of SCO links (2-eSCO, 0-SCO). */
@@ -581,7 +581,7 @@
 #endif
 
 #ifndef MAX_L2CAP_CHANNELS
-#define MAX_L2CAP_CHANNELS 20
+#define MAX_L2CAP_CHANNELS 32
 #endif
 
 /* The maximum number of simultaneous applications that can register with L2CAP.
@@ -808,6 +808,11 @@
 #define GATT_MAX_APPS 32 /* note: 2 apps used internally GATT and GAP */
 #endif
 
+/* connection manager doesn't generate it's own IDs. Instead, all GATT clients
+ * use their gatt_if to identify against conection manager. When stack tries to
+ * create l2cap connection, it will use this fixed ID. */
+#define CONN_MGR_ID_L2CAP (GATT_MAX_APPS + 10)
+
 #ifndef GATT_MAX_PHY_CHANNEL
 #define GATT_MAX_PHY_CHANNEL 7
 #endif
@@ -903,12 +908,12 @@
 
 /* The maximum number of simultaneous client and server connections. */
 #ifndef SDP_MAX_CONNECTIONS
-#define SDP_MAX_CONNECTIONS 4
+#define SDP_MAX_CONNECTIONS 10
 #endif
 
 /* The MTU size for the L2CAP configuration. */
 #ifndef SDP_MTU_SIZE
-#define SDP_MTU_SIZE 672
+#define SDP_MTU_SIZE 1024
 #endif
 
 /* The flush timeout for the L2CAP configuration. */
@@ -1162,21 +1167,21 @@
 
 /* Number of simultaneous links to different peer devices. */
 #ifndef AVDT_NUM_LINKS
-#define AVDT_NUM_LINKS 2
+#define AVDT_NUM_LINKS 5
 #endif
 
 /* Number of simultaneous stream endpoints. */
-#if defined (AVDT_NUM_SEPS) && (AVDT_NUM_SEPS < 14)
+#if defined (AVDT_NUM_SEPS) && (AVDT_NUM_SEPS < (7*5))
 #undef AVDT_NUM_SEPS
 #endif
 
 #ifndef AVDT_NUM_SEPS
-#define AVDT_NUM_SEPS 14
+#define AVDT_NUM_SEPS 35
 #endif
 
 /* Number of transport channels setup by AVDT for all media streams */
 #ifndef AVDT_NUM_TC_TBL
-#define AVDT_NUM_TC_TBL 6
+#define AVDT_NUM_TC_TBL 12
 #endif
 
 /* Maximum size in bytes of the content protection information element. */
@@ -1378,6 +1383,9 @@
 #endif
 #ifndef TWS_ENABLED
 #define TWS_ENABLED TRUE
+#ifndef TWS_STATE_ENABLED
+#define TWS_STATE_ENABLED TRUE
+#endif
 #endif
 /******************************************************************************
  *
@@ -1387,18 +1395,24 @@
 
 /* Number of simultaneous ACL links to different peer devices. */
 #ifndef AVCT_NUM_LINKS
-#define AVCT_NUM_LINKS 2
+#define AVCT_NUM_LINKS  6
 #endif
 
 /* Number of simultaneous AVCTP connections. */
 #ifndef AVCT_NUM_CONN
-#define AVCT_NUM_CONN 3
+/*Number of  links 5 + browsing channel for active device + browsing and control channeli for
+incoming connection
+*/
+#define AVCT_NUM_CONN AVCT_NUM_LINKS + 2
 #endif
 
 #ifndef TWS_AG_ENABLED
 #define TWS_AG_ENABLED TRUE
 #endif
 
+#ifndef SWB_ENABLED
+#define SWB_ENABLED TRUE
+#endif
 /******************************************************************************
  *
  * AVRCP
@@ -1418,118 +1432,6 @@
 
 #ifndef DUMP_PCM_DATA
 #define DUMP_PCM_DATA FALSE
-#endif
-
-/******************************************************************************
- *
- * MCAP
- *
- *****************************************************************************/
-#ifndef MCA_INCLUDED
-#define MCA_INCLUDED FALSE
-#endif
-
-/* The MTU size for the L2CAP configuration on control channel. 48 is the
- * minimal */
-#ifndef MCA_CTRL_MTU
-#define MCA_CTRL_MTU 60
-#endif
-
-/* The maximum number of registered MCAP instances. */
-#ifndef MCA_NUM_REGS
-#define MCA_NUM_REGS 12
-#endif
-
-/* The maximum number of control channels (to difference devices) per registered
- * MCAP instances. */
-#ifndef MCA_NUM_LINKS
-#define MCA_NUM_LINKS 3
-#endif
-
-/* The maximum number of MDEP (including HDP echo) per registered MCAP
- * instances. */
-#ifndef MCA_NUM_DEPS
-#define MCA_NUM_DEPS 13
-#endif
-
-/* The maximum number of MDL link per control channel. */
-#ifndef MCA_NUM_MDLS
-#define MCA_NUM_MDLS 4
-#endif
-
-/* Buffer size to reassemble the SDU. */
-#ifndef MCA_USER_RX_BUF_SIZE
-#define MCA_USER_RX_BUF_SIZE BT_DEFAULT_BUFFER_SIZE
-#endif
-
-/* Buffer size to hold the SDU. */
-#ifndef MCA_USER_TX_BUF_SIZE
-#define MCA_USER_TX_BUF_SIZE BT_DEFAULT_BUFFER_SIZE
-#endif
-
-/*
- * Buffer size used to hold MPS segments during SDU reassembly
- */
-#ifndef MCA_FCR_RX_BUF_SIZE
-#define MCA_FCR_RX_BUF_SIZE BT_DEFAULT_BUFFER_SIZE
-#endif
-
-/*
- * Default buffer size used to hold MPS segments used in (re)transmissions.
- * The size of each buffer must be able to hold the maximum MPS segment size
- * passed in tL2CAP_FCR_OPTIONS plus BT_HDR (8) + HCI preamble (4) +
- * L2CAP_MIN_OFFSET (11 - as of BT 2.1 + EDR Spec).
- */
-#ifndef MCA_FCR_TX_BUF_SIZE
-#define MCA_FCR_TX_BUF_SIZE BT_DEFAULT_BUFFER_SIZE
-#endif
-
-/* MCAP control channel FCR Option:
-Size of the transmission window when using enhanced retransmission mode.
-1 is defined by HDP specification for control channel.
-*/
-#ifndef MCA_FCR_OPT_TX_WINDOW_SIZE
-#define MCA_FCR_OPT_TX_WINDOW_SIZE 1
-#endif
-
-/* MCAP control channel FCR Option:
-Number of transmission attempts for a single I-Frame before taking
-Down the connection. Used In ERTM mode only. Value is Ignored in basic and
-Streaming modes.
-Range: 0, 1-0xFF
-0 - infinite retransmissions
-1 - single transmission
-*/
-#ifndef MCA_FCR_OPT_MAX_TX_B4_DISCNT
-#define MCA_FCR_OPT_MAX_TX_B4_DISCNT 20
-#endif
-
-/* MCAP control channel FCR Option: Retransmission Timeout
-The AVRCP specification set a value in the range of 300 - 2000 ms
-Timeout (in msecs) to detect Lost I-Frames. Only used in Enhanced retransmission
-mode.
-Range: Minimum 2000 (2 secs) when supporting PBF.
- */
-#ifndef MCA_FCR_OPT_RETX_TOUT
-#define MCA_FCR_OPT_RETX_TOUT 2000
-#endif
-
-/* MCAP control channel FCR Option: Monitor Timeout
-The AVRCP specification set a value in the range of 300 - 2000 ms
-Timeout (in msecs) to detect Lost S-Frames. Only used in Enhanced retransmission
-mode.
-Range: Minimum 12000 (12 secs) when supporting PBF.
-*/
-#ifndef MCA_FCR_OPT_MONITOR_TOUT
-#define MCA_FCR_OPT_MONITOR_TOUT 12000
-#endif
-
-/* MCAP control channel FCR Option: Maximum PDU payload size.
-The maximum number of payload octets that the local device can receive in a
-single PDU.
-*/
-#ifndef MCA_FCR_OPT_MPS_SIZE
-#define MCA_FCR_OPT_MPS_SIZE 1000
 #endif
 
 /******************************************************************************
@@ -1584,5 +1486,15 @@ single PDU.
 #endif
 
 #include "bt_trace.h"
+
+/******************************************************************************
+ *
+ * Off target test
+ *
+ *****************************************************************************/
+/* Enable off target test */
+#ifndef OFF_TARGET_TEST_ENABLED
+#define OFF_TARGET_TEST_ENABLED FALSE
+#endif
 
 #endif /* BT_TARGET_H */

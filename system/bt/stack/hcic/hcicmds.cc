@@ -29,6 +29,7 @@
 #include "hcidefs.h"
 #include "hcimsgs.h"
 
+#include <base/bind.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -211,7 +212,7 @@ void btsnd_hcic_reject_conn(const RawAddress& dest, uint8_t reason) {
 }
 
 void btsnd_hcic_link_key_req_reply(const RawAddress& bd_addr,
-                                   LINK_KEY link_key) {
+                                   const LinkKey& link_key) {
   BT_HDR* p = (BT_HDR*)osi_malloc(HCI_CMD_BUF_SIZE);
   uint8_t* pp = (uint8_t*)(p + 1);
 
@@ -222,7 +223,7 @@ void btsnd_hcic_link_key_req_reply(const RawAddress& bd_addr,
   UINT8_TO_STREAM(pp, HCIC_PARAM_SIZE_LINK_KEY_REQ_REPLY);
 
   BDADDR_TO_STREAM(pp, bd_addr);
-  ARRAY16_TO_STREAM(pp, link_key);
+  ARRAY16_TO_STREAM(pp, link_key.data());
 
   btu_hcif_send_cmd(LOCAL_BR_EDR_CONTROLLER_ID, p);
 }
@@ -590,7 +591,7 @@ void btsnd_hcic_exit_park_mode(uint16_t handle) {
   btu_hcif_send_cmd(LOCAL_BR_EDR_CONTROLLER_ID, p);
 }
 
-void btsnd_hcic_qos_setup(uint16_t handle, uint8_t flags, uint8_t service_type,
+void btsnd_hcic_qos_setup(uint16_t handle, uint8_t unused, uint8_t service_type,
                           uint32_t token_rate, uint32_t peak, uint32_t latency,
                           uint32_t delay_var) {
   BT_HDR* p = (BT_HDR*)osi_malloc(HCI_CMD_BUF_SIZE);
@@ -603,7 +604,7 @@ void btsnd_hcic_qos_setup(uint16_t handle, uint8_t flags, uint8_t service_type,
   UINT8_TO_STREAM(pp, HCIC_PARAM_SIZE_QOS_SETUP);
 
   UINT16_TO_STREAM(pp, handle);
-  UINT8_TO_STREAM(pp, flags);
+  UINT8_TO_STREAM(pp, unused);
   UINT8_TO_STREAM(pp, service_type);
   UINT32_TO_STREAM(pp, token_rate);
   UINT32_TO_STREAM(pp, peak);
@@ -613,7 +614,7 @@ void btsnd_hcic_qos_setup(uint16_t handle, uint8_t flags, uint8_t service_type,
   btu_hcif_send_cmd(LOCAL_BR_EDR_CONTROLLER_ID, p);
 }
 
-void btsnd_hcic_flow_spec(uint16_t handle, uint8_t flags, uint8_t direction,
+void btsnd_hcic_flow_spec(uint16_t handle, uint8_t unused, uint8_t direction,
                           uint8_t service_type, uint32_t token_rate,
                           uint32_t token_size, uint32_t peak, uint32_t latency){
 
@@ -627,7 +628,7 @@ void btsnd_hcic_flow_spec(uint16_t handle, uint8_t flags, uint8_t direction,
   UINT8_TO_STREAM(pp, HCIC_PARAM_SIZE_FLOW_SPECIFICATION);
 
   UINT16_TO_STREAM(pp, handle);
-  UINT8_TO_STREAM(pp, flags);
+  UINT8_TO_STREAM(pp, unused);
   UINT8_TO_STREAM(pp, direction);
   UINT8_TO_STREAM(pp, service_type);
   UINT32_TO_STREAM(pp, token_rate);
@@ -1238,8 +1239,8 @@ void btsnd_hcic_user_passkey_neg_reply(const RawAddress& bd_addr) {
   btu_hcif_send_cmd(LOCAL_BR_EDR_CONTROLLER_ID, p);
 }
 
-void btsnd_hcic_rem_oob_reply(const RawAddress& bd_addr, uint8_t* p_c,
-                              uint8_t* p_r) {
+void btsnd_hcic_rem_oob_reply(const RawAddress& bd_addr, const Octet16& c,
+                              const Octet16& r) {
   BT_HDR* p = (BT_HDR*)osi_malloc(HCI_CMD_BUF_SIZE);
   uint8_t* pp = (uint8_t*)(p + 1);
 
@@ -1250,8 +1251,8 @@ void btsnd_hcic_rem_oob_reply(const RawAddress& bd_addr, uint8_t* p_c,
   UINT8_TO_STREAM(pp, HCIC_PARAM_SIZE_REM_OOB_REPLY);
 
   BDADDR_TO_STREAM(pp, bd_addr);
-  ARRAY16_TO_STREAM(pp, p_c);
-  ARRAY16_TO_STREAM(pp, p_r);
+  ARRAY16_TO_STREAM(pp, c.data());
+  ARRAY16_TO_STREAM(pp, r.data());
 
   btu_hcif_send_cmd(LOCAL_BR_EDR_CONTROLLER_ID, p);
 }
@@ -1351,6 +1352,32 @@ void btsnd_hcic_read_rssi(uint16_t handle) {
   UINT16_TO_STREAM(pp, handle);
 
   btu_hcif_send_cmd(LOCAL_BR_EDR_CONTROLLER_ID, p);
+}
+
+static void read_encryption_key_size_complete(
+    ReadEncKeySizeCb cb, uint8_t* return_parameters,
+    uint16_t return_parameters_length) {
+  uint8_t status;
+  uint16_t handle;
+  uint8_t key_size;
+  STREAM_TO_UINT8(status, return_parameters);
+  STREAM_TO_UINT16(handle, return_parameters);
+  STREAM_TO_UINT8(key_size, return_parameters);
+
+  std::move(cb).Run(status, handle, key_size);
+}
+
+void btsnd_hcic_read_encryption_key_size(uint16_t handle, ReadEncKeySizeCb cb) {
+  constexpr uint8_t len = 2;
+  uint8_t param[len];
+  memset(param, 0, len);
+
+  uint8_t* p = param;
+  UINT16_TO_STREAM(p, handle);
+
+  btu_hcif_send_cmd_with_cb(
+      FROM_HERE, HCI_READ_ENCR_KEY_SIZE, param, len,
+      base::Bind(&read_encryption_key_size_complete, base::Passed(&cb)));
 }
 
 void btsnd_hcic_read_failed_contact_counter(uint16_t handle) {

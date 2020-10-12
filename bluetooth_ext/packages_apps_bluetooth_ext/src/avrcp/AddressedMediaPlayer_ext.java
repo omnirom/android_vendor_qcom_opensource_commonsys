@@ -270,11 +270,13 @@ public class AddressedMediaPlayer_ext {
             (qid != mLastTrackIdSent)) {
              byte[] lastTrack =
                     ByteBuffer.allocate(AvrcpConstants_ext.UID_SIZE).putLong(mLastTrackIdSent).array();
+             Log.w(TAG,"sendTrackChange track " + Arrays.toString(lastTrack) + " rsptype " + type);
              mMediaInterface.trackChangedRsp(type, lastTrack);
              type = AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
         }
         // The nowPlayingList changed: the new list has the full data for the current item
         Log.d(TAG, "last_sent_qid: " + mLastTrackIdSent);
+        Log.w(TAG, "sendTrackChangedRsp track " + Arrays.toString(track) + " rsptype " + type);
         mMediaInterface.trackChangedRsp(type, track);
         mLastTrackIdSent = qid;
     }
@@ -293,11 +295,13 @@ public class AddressedMediaPlayer_ext {
             (qid != mLastTrackIdSent)) {
              byte[] lastTrack =
                     ByteBuffer.allocate(AvrcpConstants_ext.UID_SIZE).putLong(mLastTrackIdSent).array();
+             Log.w(TAG,"sendTrackChange track " + Arrays.toString(lastTrack) + " rsptype " + type);
              mAvrcp.trackChangedAddressedRsp(type, lastTrack, bdaddr);
              type = AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
         }
         // The nowPlayingList changed: the new list has the full data for the current item
         Log.d(TAG, "last_sent_qid: " + mLastTrackIdSent);
+        Log.w(TAG, "sendTrackChangedRsp track " + Arrays.toString(track) + " rsptype " + type);
         mAvrcp.trackChangedAddressedRsp(type, track, bdaddr);
         mLastTrackIdSent = qid;
     }

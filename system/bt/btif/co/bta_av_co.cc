@@ -78,14 +78,16 @@
 #include <hardware/bt_gatt.h>
 #include "btif/include/btif_a2dp_source.h"
 #include "device/include/device_iot_config.h"
-#include "include/hardware/bt_av.h"
-
+#include "btif/include/btif_config.h"
+#include "stack/include/a2dp_vendor_ldac_constants.h"
 #define MAX_2MBPS_AVDTP_MTU 663
+#define A2DP_LDAC_CODEC_BEST_SAMPLE_RATE 96000
+#define A2DP_AAC_BOSE_VENDOR_ID 0x009E
 extern const btgatt_interface_t* btif_gatt_get_interface();
 
 bool isDevUiReq = false;
 btav_a2dp_codec_config_t saved_codec_user_config;
-
+std::string supported_codecs = "";
 /*****************************************************************************
  **  Constants
  *****************************************************************************/
@@ -97,56 +99,13 @@ btav_a2dp_codec_config_t saved_codec_user_config;
 #define BTA_AV_CO_AUDIO_HNDL_TO_INDX(hndl) (((hndl) & (~BTA_AV_CHNL_MSK)) - 1)
 #define BTA_AV_CO_AUDIO_INDX_TO_HNDL(indx) (((indx) + 1) | BTA_AV_CHNL_AUDIO)
 
+static void bta_av_co_free_peer(tBTA_AV_CO_PEER* p_peer);
 /* SCMS-T protect info */
 const uint8_t bta_av_co_cp_scmst[AVDT_CP_INFO_LEN] = {0x02, 0x02, 0x00};
 
 /*****************************************************************************
  *  Local data
  ****************************************************************************/
-typedef struct {
-  uint8_t sep_info_idx;                   /* local SEP index (in BTA tables) */
-  uint8_t seid;                           /* peer SEP index (in peer tables) */
-  uint8_t codec_caps[AVDT_CODEC_SIZE];    /* peer SEP codec capabilities */
-  uint8_t num_protect;                    /* peer SEP number of CP elements */
-  uint8_t protect_info[AVDT_CP_INFO_LEN]; /* peer SEP content protection info */
-} tBTA_AV_CO_SINK;
-
-typedef struct {
-  RawAddress addr; /* address of audio/video peer */
-  tBTA_AV_CO_SINK
-      sinks[BTAV_A2DP_CODEC_INDEX_MAX]; /* array of supported sinks */
-  tBTA_AV_CO_SINK srcs[BTAV_A2DP_CODEC_INDEX_MAX]; /* array of supported srcs */
-  uint8_t num_sinks;     /* total number of sinks at peer */
-  uint8_t num_srcs;      /* total number of srcs at peer */
-  uint8_t num_seps;      /* total number of seids at peer */
-  uint8_t num_rx_sinks;  /* number of received sinks */
-  uint8_t num_rx_srcs;   /* number of received srcs */
-  uint8_t num_sup_sinks; /* number of supported sinks in the sinks array */
-  uint8_t num_sup_srcs;  /* number of supported srcs in the srcs array */
-  const tBTA_AV_CO_SINK* p_sink;         /* currently selected sink */
-  const tBTA_AV_CO_SINK* p_src;          /* currently selected src */
-  uint8_t codec_config[AVDT_CODEC_SIZE]; /* current codec configuration */
-  bool cp_active;                        /* current CP configuration */
-  bool acp;                              /* acceptor */
-  bool reconfig_needed;                  /* reconfiguration is needed */
-  bool rcfg_done;                        /* reconfiguration complete */
-  bool opened;                           /* opened */
-  uint16_t mtu;                          /* maximum transmit unit size */
-  uint16_t uuid_to_connect;              /* uuid of peer device */
-  tBTA_AV_HNDL handle;                   /* handle to use */
-  A2dpCodecs* codecs;                    /* Locally supported codecs */
-  bool is_active_peer;                   /* If this is active peer */
-  bool rcfg_pend_getcap;                 /* if reconfig is pending for get_cap */
-  bool isIncoming;                       /* to know whether it is incmoming connection */
-  btav_a2dp_codec_index_t codecIndextoCompare; /* save codec index when incoming setconfig done */
-  bool getcap_pending;   /* Get_caps for all remote SEPS done or not*/
-} tBTA_AV_CO_PEER;
-
-typedef struct {
-  bool active;
-  uint8_t flag;
-} tBTA_AV_CO_CP;
-
 class BtaAvCoCb {
  public:
   BtaAvCoCb() :  codec_config{} { reset(); }
@@ -161,14 +120,13 @@ class BtaAvCoCb {
   void reset() {
     // TODO: Ugly leftover reset from the original C code. Should go away once
     // the rest of the code in this file migrates to C++.
-    memset(peers, 0, sizeof(peers));
     memset(codec_config, 0, sizeof(codec_config));
     memset(&cp, 0, sizeof(cp));
-    default_codec_priorities.clear();
 
     // Initialize the handles
     for (size_t i = 0; i < BTA_AV_CO_NUM_ELEMENTS(peers); i++) {
       tBTA_AV_CO_PEER* p_peer = &peers[i];
+      bta_av_co_free_peer(p_peer);
       p_peer->handle = BTA_AV_CO_AUDIO_INDX_TO_HNDL(i);
     }
   }
@@ -183,10 +141,10 @@ static bool bta_av_co_audio_protect_has_scmst(uint8_t num_protect,
 static const tBTA_AV_CO_SINK* bta_av_co_find_peer_src_supports_codec(
     const tBTA_AV_CO_PEER* p_peer);
 static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer);
+static const tBTA_AV_CO_SINK* bta_av_co_find_peer_src_supports_codec_index(
+    const tBTA_AV_CO_PEER* p_peer, btav_a2dp_codec_index_t codec_index);
 static tBTA_AV_CO_SINK* bta_av_co_audio_codec_selected(
     A2dpCodecConfig& codec_config, tBTA_AV_CO_PEER* p_peer);
-static bool bta_av_co_audio_update_selectable_codec(
-    A2dpCodecConfig& codec_config, const tBTA_AV_CO_PEER* p_peer);
 static void bta_av_co_save_new_codec_config(tBTA_AV_CO_PEER* p_peer,
                                             const uint8_t* new_codec_config,
                                             uint8_t num_protect,
@@ -196,12 +154,20 @@ static bool bta_av_co_set_codec_ota_config(tBTA_AV_CO_PEER* p_peer,
                                            uint8_t num_protect,
                                            const uint8_t* p_protect_info,
                                            bool* p_restart_output);
+static bool bta_av_co_audio_update_selectable_codec(
+    A2dpCodecConfig& codec_config, const tBTA_AV_CO_PEER* p_peer);
 
 /* externs */
 extern int btif_max_av_clients;
 extern tBTA_AV_HNDL btif_av_get_reconfig_dev_hndl();
 extern void btif_av_reset_codec_reconfig_flag(RawAddress address);
 extern bool bt_split_a2dp_enabled;
+extern void btif_av_set_reconfig_flag(tBTA_AV_HNDL bta_handle);
+extern bool btif_av_check_is_reconfig_pending_flag_set(RawAddress address);
+extern bool btif_av_check_is_cached_reconfig_event_exist(RawAddress address);
+extern bool btif_av_check_is_retry_reconfig_set(RawAddress address);
+extern void btif_av_clear_is_retry_reconfig_flag(RawAddress address);
+
 /*******************************************************************************
  **
  ** Function         bta_av_co_cp_get_flag
@@ -276,7 +242,7 @@ static tBTA_AV_CO_PEER* bta_av_co_get_peer(tBTA_AV_HNDL hndl) {
   return &bta_av_co_cb.peers[index];
 }
 
-static tBTA_AV_CO_PEER* bta_av_co_get_active_peer(void) {
+tBTA_AV_CO_PEER* bta_av_co_get_active_peer(void) {
   size_t i;
   for (i = 0; i < BTA_AV_CO_NUM_ELEMENTS(bta_av_co_cb.peers); i++) {
     tBTA_AV_CO_PEER* p_peer = &bta_av_co_cb.peers[i];
@@ -292,6 +258,10 @@ static tBTA_AV_CO_PEER* bta_av_co_get_active_peer(void) {
   return &bta_av_co_cb.peers[i];
 }
 
+bool bta_av_co_is_active_peer () {
+  return (bta_av_co_get_active_peer() != NULL);
+}
+
 bool bta_av_co_set_active_peer(const RawAddress& peer_address) {
   bool status = false;
   for (size_t i = 0; i < BTA_AV_CO_NUM_ELEMENTS(bta_av_co_cb.peers); i++) {
@@ -302,6 +272,26 @@ bool bta_av_co_set_active_peer(const RawAddress& peer_address) {
     } else if (p_peer_tmp->addr == peer_address) {
       p_peer_tmp->is_active_peer = true;
       status = true;
+
+      if (p_peer_tmp->rcfg_pend_active) {
+        APPL_TRACE_DEBUG("%s: set active peer, trigger reconfig again", __func__);
+        const tBTA_AV_CO_SINK* p_sink = bta_av_co_audio_set_codec(p_peer_tmp);
+        if (p_sink != NULL) {
+          uint8_t num_protect = 0;
+#if (BTA_AV_CO_CP_SCMS_T == TRUE)
+          if (p_peer_tmp->cp_active) num_protect = AVDT_CP_INFO_LEN;
+#endif
+          if (p_peer_tmp->reconfig_needed) {
+            APPL_TRACE_DEBUG("%s: call BTA_AvReconfig(x%x)", __func__, p_peer_tmp->handle);
+            btif_av_set_reconfig_flag(p_peer_tmp->handle);
+            BTA_AvReconfig(p_peer_tmp->handle, true, p_sink->sep_info_idx, p_peer_tmp->codec_config,
+                            num_protect, bta_av_co_cp_scmst);
+            p_peer_tmp->rcfg_done = true;
+            p_peer_tmp->reconfig_needed = false;
+          }
+        }
+        p_peer_tmp->rcfg_pend_active = false;
+      }
     } else {
       p_peer_tmp->is_active_peer = false;
     }
@@ -339,6 +329,7 @@ uint8_t* bta_av_co_get_peer_codec_info(tBTA_AV_HNDL hndl) {
  ******************************************************************************/
 bool bta_av_co_audio_init(btav_a2dp_codec_index_t codec_index,
                           tAVDT_CFG* p_cfg) {
+  APPL_TRACE_DEBUG("%s: codec_index: %d", __func__, codec_index);
   return A2DP_InitCodecConfig(codec_index, p_cfg);
 }
 
@@ -385,6 +376,7 @@ void bta_av_co_audio_disc_res(tBTA_AV_HNDL hndl, uint8_t num_seps,
   p_peer->num_sup_sinks = 0;
   p_peer->rcfg_pend_getcap = false;
   p_peer->getcap_pending = false;
+  p_peer->rcfg_pend_active = false;
   if (uuid_local == UUID_SERVCLASS_AUDIO_SINK)
     p_peer->uuid_to_connect = UUID_SERVCLASS_AUDIO_SOURCE;
   else if (uuid_local == UUID_SERVCLASS_AUDIO_SOURCE)
@@ -575,16 +567,63 @@ tA2DP_STATUS bta_av_co_audio_getconfig(tBTA_AV_HNDL hndl, uint8_t* p_codec_info,
     }
   }
 
+  std::string remote_bd_addr_str = p_peer->addr.ToString();
+  const char* remote_bdstr  = remote_bd_addr_str.c_str();
+
+  bta_av_co_check_and_add_soc_supported_codecs(p_codec_info);
+
   // Check if this is the last SINK get capabilities or all supported codec
   // capabilities are retrieved.
   if ((p_peer->num_rx_sinks != p_peer->num_sinks) &&
       (p_peer->num_sup_sinks != BTA_AV_CO_NUM_ELEMENTS(p_peer->sinks))) {
     return A2DP_FAIL;
   }
-  APPL_TRACE_DEBUG("%s: last sink reached", __func__);
+
+  //store peer supported codecs in bt_config.conf file
+  btif_config_set_str(remote_bdstr,BTIF_STORAGE_KEY_FOR_SUPPORTED_CODECS, supported_codecs.c_str());
+  supported_codecs.clear();
+
+  APPL_TRACE_DEBUG("%s: last Sink codec reached for peer %s (local %s)",
+                   __func__, p_peer->addr.ToString().c_str(),
+                   p_peer->acp ? "acceptor" : "initiator");
+
 #if (BT_IOT_LOGGING_ENABLED == TRUE)
   bta_av_co_store_peer_codectype(p_peer);
 #endif
+
+  if (!p_peer->acp) {
+    if (btif_av_peer_prefers_mandatory_codec(p_peer->addr)) {
+      // Apply user preferred codec directly before first codec selected.
+      const tBTA_AV_CO_SINK *p_sink = bta_av_co_find_peer_src_supports_codec_index(
+               p_peer, BTAV_A2DP_CODEC_INDEX_SOURCE_SBC);
+
+      if (p_sink != NULL) {
+        APPL_TRACE_API("%s: mandatory codec preferred for peer %s", __func__,
+                       p_peer->addr.ToString().c_str());
+        btav_a2dp_codec_config_t high_priority_mandatory{
+            .codec_type = BTAV_A2DP_CODEC_INDEX_SOURCE_SBC,
+            .codec_priority = BTAV_A2DP_CODEC_PRIORITY_HIGHEST,
+            // Using default settings for those untouched fields
+        };
+        uint8_t result_codec_config[AVDT_CODEC_SIZE];
+        bool restart_input = false;
+        bool restart_output = false;
+        bool config_updated = false;
+        tA2DP_ENCODER_INIT_PEER_PARAMS peer_params;
+        bta_av_co_get_peer_params(&peer_params);
+        if (p_peer->codecs != NULL) {
+          APPL_TRACE_DEBUG("%s: Call setCodecUserConfig", __func__);
+          p_peer->codecs->setCodecUserConfig(
+              high_priority_mandatory, &peer_params, p_sink->codec_caps,
+              result_codec_config, &restart_input, &restart_output,
+              &config_updated);
+        }
+      } else {
+        APPL_TRACE_WARNING("%s: mandatory codec not found for peer %s",
+                           __func__, p_peer->addr.ToString().c_str());
+      }
+    }
+  }
 
   const tBTA_AV_CO_SINK* p_sink = bta_av_co_audio_set_codec(p_peer);
   if (p_sink == NULL) {
@@ -611,9 +650,16 @@ tA2DP_STATUS bta_av_co_audio_getconfig(tBTA_AV_HNDL hndl, uint8_t* p_codec_info,
 
     if (p_peer->reconfig_needed || p_peer->rcfg_pend_getcap) {
       APPL_TRACE_DEBUG("%s: call BTA_AvReconfig(x%x)", __func__, hndl);
+      btif_av_set_reconfig_flag(hndl);
+      uint8_t index = BTA_AV_CO_AUDIO_HNDL_TO_INDX(hndl);
+      if (index == btif_a2dp_source_last_remote_start_index()) {
+        APPL_TRACE_EVENT("%s: clear remote start idx: %d as part of Reconfig", __func__, index);
+        btif_a2dp_source_cancel_remote_start();
+      }
       BTA_AvReconfig(hndl, true, p_sink->sep_info_idx, p_peer->codec_config,
                      *p_num_protect, bta_av_co_cp_scmst);
       p_peer->rcfg_done = true;
+      p_peer->reconfig_needed = false;
     }
     if (p_peer->getcap_pending) {
       APPL_TRACE_DEBUG("%s: send event BTIF_MEDIA_SOURCE_ENCODER_USER_CONFIG_UPDATE to update",
@@ -644,7 +690,7 @@ tA2DP_STATUS bta_av_co_audio_getconfig(tBTA_AV_HNDL hndl, uint8_t* p_codec_info,
  **
  ******************************************************************************/
 void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
-                               UNUSED_ATTR uint8_t seid,
+                               uint8_t seid,
                                const RawAddress& addr, uint8_t num_protect,
                                const uint8_t* p_protect_info,
                                uint8_t t_local_sep, uint8_t avdt_handle) {
@@ -652,10 +698,11 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
   tA2DP_STATUS status = A2DP_SUCCESS;
   uint8_t category = A2DP_SUCCESS;
   bool reconfig_needed = false;
+  char value[PROPERTY_VALUE_MAX] = "false";
 
   std::string addrstr = addr.ToString();
   const char* bd_addr_str = addrstr.c_str();
-  APPL_TRACE_DEBUG("%s: Device [%s]", __func__, bd_addr_str);
+  APPL_TRACE_DEBUG("%s: Device [%s], seid = %d", __func__, bd_addr_str, seid);
   APPL_TRACE_IMP("%s: p_codec_info[%x:%x:%x:%x:%x:%x]", __func__,
                    p_codec_info[1], p_codec_info[2], p_codec_info[3],
                    p_codec_info[4], p_codec_info[5], p_codec_info[6]);
@@ -669,7 +716,7 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
   if (p_peer == NULL) {
     APPL_TRACE_ERROR("%s: could not find peer entry", __func__);
     /* Call call-in rejecting the configuration */
-    bta_av_ci_setconfig(hndl, A2DP_BUSY, AVDT_ASC_CODEC, 0, NULL, false,
+    bta_av_ci_setconfig(hndl, A2DP_BUSY, AVDT_ASC_CODEC, 0, &seid, false,
                         avdt_handle);
     return;
   }
@@ -712,7 +759,7 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
 
     if (t_local_sep == AVDT_TSEP_SNK) {
       APPL_TRACE_DEBUG("%s: peer is A2DP SRC", __func__);
-      codec_config_supported = A2DP_IsPeerSourceCodecSupported(p_codec_info);
+      codec_config_supported = A2DP_IsSinkCodecSupported(p_codec_info);
       if (codec_config_supported) {
         // If Peer is SRC, and our config subset matches with what is
         // requested by peer, then just accept what peer wants.
@@ -750,16 +797,25 @@ void bta_av_co_audio_setconfig(tBTA_AV_HNDL hndl, const uint8_t* p_codec_info,
   if (status != A2DP_SUCCESS) {
     APPL_TRACE_ERROR("%s: reject s=%d c=%d", __func__, status, category);
     /* Call call-in rejecting the configuration */
-    bta_av_ci_setconfig(hndl, status, category, 0, NULL, false, avdt_handle);
+    bta_av_ci_setconfig(hndl, status, category, 0, &seid, false, avdt_handle);
     return;
   }
-
+  property_get("persist.vendor.bt.a2dp.ldac_96k_support", value, "false");
+  if (!strncmp("true", value, 4)) {
+    btav_a2dp_codec_index_t ota_codec_index =
+        A2DP_SourceCodecIndex(p_codec_info);
+    if (p_peer->isIncoming && ota_codec_index == BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC
+        && (A2DP_GetTrackSampleRate(p_codec_info) != A2DP_LDAC_CODEC_BEST_SAMPLE_RATE)) {
+      APPL_TRACE_DEBUG("%s: Selected codec is LDAC and reconfig is needed", __func__);
+      reconfig_needed = true;
+    }
+  }
   /* Mark that this is an acceptor peer */
   p_peer->acp = true;
   p_peer->reconfig_needed = reconfig_needed;
   APPL_TRACE_DEBUG("%s: accept reconf=%d", __func__, reconfig_needed);
   /* Call call-in accepting the configuration */
-  bta_av_ci_setconfig(hndl, A2DP_SUCCESS, A2DP_SUCCESS, 0, NULL,
+  bta_av_ci_setconfig(hndl, A2DP_SUCCESS, A2DP_SUCCESS, 0, &seid,
                       reconfig_needed, avdt_handle);
 }
 
@@ -814,13 +870,52 @@ void bta_av_co_audio_close(tBTA_AV_HNDL hndl) {
   p_peer = bta_av_co_get_peer(hndl);
   if (p_peer && (index < BTA_AV_CO_NUM_ELEMENTS(bta_av_co_cb.peers))) {
     /* Mark the peer closed and clean the peer info */
-    memset(p_peer, 0, sizeof(*p_peer));
+    bta_av_co_free_peer(p_peer);
     APPL_TRACE_DEBUG("%s call bta_av_co_peer_init", __func__);
     bta_av_co_peer_init(bta_av_co_cb.default_codec_priorities, index);
   } else {
     APPL_TRACE_ERROR("%s: could not find peer entry", __func__);
   }
 }
+
+/*******************************************************************************
+ **
+ ** Function         bta_av_co_free_peer
+ **
+ ** Description      This function free up and clears peer data when the audio
+ **                  stream connection is closed.
+ **
+ **
+ ** Returns          void
+ **
+ ******************************************************************************/
+void bta_av_co_free_peer(tBTA_AV_CO_PEER* p_peer) {
+  memset(&p_peer->addr, 0, sizeof(RawAddress));
+  memset(p_peer->sinks, 0, sizeof(p_peer->sinks));
+  memset(p_peer->srcs, 0, sizeof(p_peer->srcs));
+  p_peer->num_sinks = 0;
+  p_peer->num_srcs = 0;
+  p_peer->num_seps = 0;
+  p_peer->num_rx_sinks = 0;
+  p_peer->num_rx_srcs = 0;
+  p_peer->num_sup_sinks = 0;
+  p_peer->num_sup_srcs = 0;
+  memset(p_peer->codec_config, 0, sizeof(p_peer->codec_config));
+  p_peer->cp_active = 0;
+  p_peer->acp = 0;
+  p_peer->reconfig_needed = 0;
+  p_peer->rcfg_done = 0;
+  p_peer->opened = 0;
+  p_peer->mtu = 0;
+  p_peer->uuid_to_connect = 0;
+  p_peer->handle = 0;
+  p_peer->is_active_peer = 0;
+  p_peer->rcfg_pend_getcap = 0;
+  p_peer->isIncoming = 0;
+  p_peer->codecIndextoCompare = (btav_a2dp_codec_index_t)0;
+  p_peer->getcap_pending = 0;
+}
+
 
 /*******************************************************************************
  **
@@ -872,7 +967,10 @@ void* bta_av_co_audio_src_data_path(const uint8_t* p_codec_info,
   APPL_TRACE_DEBUG("%s: codec: %s", __func__, A2DP_CodecName(p_codec_info));
 
   p_buf = btif_a2dp_source_audio_readbuf();
-  if (p_buf == NULL) return NULL;
+  if (p_buf == NULL) {
+    APPL_TRACE_DEBUG("%s: p_buf is null, return", __func__);
+    return NULL;
+  }
 
   /*
    * Retrieve the timestamp information from the media packet,
@@ -999,8 +1097,7 @@ static bool bta_av_co_audio_protect_has_scmst(uint8_t num_protect,
  ** Returns          returns default value true, false if property is disabled
  **
  ******************************************************************************/
-
-bool bta_av_co_audio_is_aac_wl_enabled(RawAddress *remote_bdaddr) {
+bool bta_av_co_audio_is_aac_wl_enabled(const RawAddress *remote_bdaddr) {
 
   int retval;
   bool res = FALSE;
@@ -1023,8 +1120,7 @@ bool bta_av_co_audio_is_aac_wl_enabled(RawAddress *remote_bdaddr) {
  ** Returns          returns default value true, false if property is disabled
  **
  ******************************************************************************/
-
-bool bta_av_co_audio_device_addr_check_is_enabled(RawAddress *remote_bdaddr) {
+bool bta_av_co_audio_device_addr_check_is_enabled(const RawAddress *remote_bdaddr) {
 
   int retval;
   bool res = FALSE;
@@ -1060,6 +1156,41 @@ static bool bta_av_co_audio_sink_supports_cp(const tBTA_AV_CO_SINK* p_sink) {
   return true;
 }
 
+static const tBTA_AV_CO_SINK* bta_av_co_find_peer_src_supports_codec_index(
+    const tBTA_AV_CO_PEER* p_peer, btav_a2dp_codec_index_t codec_index) {
+
+  APPL_TRACE_DEBUG("%s: Looking sink for codec index %d", __func__, codec_index);
+  // Find the peer sink for the codec
+  const tBTA_AV_CO_SINK* p_sink = NULL;
+  if (codec_index == BTAV_A2DP_CODEC_INDEX_MAX) {
+     APPL_TRACE_WARNING("%s: invalid codec index for peer %s", __func__,
+                        p_peer->addr.ToString().c_str());
+     return p_sink;
+  }
+
+  for (size_t index = 0; index < p_peer->num_sup_sinks; index++) {
+    btav_a2dp_codec_index_t peer_codec_index =
+        A2DP_SourceCodecIndex(p_peer->sinks[index].codec_caps);
+
+    APPL_TRACE_DEBUG("%s ind: %d, peer_codec_index : %d :: codec_index : %d",
+           __func__, index, peer_codec_index, codec_index);
+
+    if (peer_codec_index != codec_index) {
+      continue;
+    }
+    if (!bta_av_co_audio_sink_supports_cp(&p_peer->sinks[index])) {
+      APPL_TRACE_DEBUG(
+          "%s: peer sink for codec %s does not support Copy Protection",
+          __func__,  A2DP_CodecIndexStr(peer_codec_index));
+      continue;
+    }
+    p_sink = &p_peer->sinks[index];
+    break;
+  }
+
+  return p_sink;
+}
+
 /*******************************************************************************
  **
  ** Function         bta_av_co_find_peer_src_supports_codec
@@ -1073,26 +1204,92 @@ static const tBTA_AV_CO_SINK* bta_av_co_find_peer_src_supports_codec(
     const tBTA_AV_CO_PEER* p_peer) {
   APPL_TRACE_DEBUG("%s: peer num_sup_srcs = %d", __func__,
                    p_peer->num_sup_srcs);
-  // Select Peer Source supported codec as per local Sink order
-  for (const auto& iter :  p_peer->codecs->orderedSinkCodecs()) {
-      APPL_TRACE_DEBUG("%s: trying codec %s", __func__, iter->name().c_str());
-      for (size_t index = 0; index < p_peer->num_sup_srcs; index++) {
-        const uint8_t* p_codec_caps = p_peer->srcs[index].codec_caps;
-        btav_a2dp_codec_index_t peer_codec_index =
-                A2DP_SinkCodecIndex(p_peer->srcs[index].codec_caps);
 
-        APPL_TRACE_DEBUG("%s ind: %d, peer_codec_index : %d :: codec_config.codecIndex() : %d",
-               __func__, index, peer_codec_index, iter->codecIndex());
-
-        if (peer_codec_index != iter->codecIndex()) {
-          continue;
-        }
-        if (A2DP_IsPeerSourceCodecSupported(p_codec_caps)) {
-          return &p_peer->srcs[index];
-        }
-      }
+  for (size_t index = 0; index < p_peer->num_sup_srcs; index++) {
+    const uint8_t* p_codec_caps = p_peer->srcs[index].codec_caps;
+    if (A2DP_CodecTypeEquals(bta_av_co_cb.codec_config, p_codec_caps) &&
+        A2DP_IsPeerSourceCodecSupported(p_codec_caps)) {
+      return &p_peer->srcs[index];
+    }
   }
   return NULL;
+}
+
+/*******************************************************************************
+ **
+ ** Function         bta_av_co_check_peer_eligible_for_aac_codec
+ **
+ ** Description      Find if peer device full fill requirements for aac support
+ **
+ ** Returns          true if eligible for aac else false
+ **
+ ******************************************************************************/
+static bool bta_av_co_check_peer_eligible_for_aac_codec(
+    const tBTA_AV_CO_PEER* p_peer) {
+  char remote_name[BTM_MAX_REM_BD_NAME_LEN] = "";
+  uint16_t vendor = 0;
+  uint16_t product = 0;
+  uint16_t version = 0;
+  bool vndr_prdt_ver_present = false;
+  bool aac_support = false;
+  if (btif_config_get_uint16(p_peer->addr.ToString().c_str(), PNP_VENDOR_ID_CONFIG_KEY,
+      (uint16_t*)&vendor) && btif_config_get_uint16(p_peer->addr.ToString().c_str(),
+      PNP_PRODUCT_ID_CONFIG_KEY, (uint16_t*)&product) && btif_config_get_uint16(p_peer->addr.ToString().c_str(),
+      PNP_PRODUCT_VERSION_CONFIG_KEY, (uint16_t*)&version)) {
+    APPL_TRACE_DEBUG("%s: vendor: 0x%04x product: 0x%04x version: 0x%04x", __func__, vendor, product, version);
+    vndr_prdt_ver_present = true;
+  }
+  if (vndr_prdt_ver_present && (vendor == A2DP_AAC_BOSE_VENDOR_ID)) {
+    APPL_TRACE_DEBUG("%s: vendor id info matches ", __func__);
+    vndr_prdt_ver_present = false;
+    aac_support = true;
+  } else if (vndr_prdt_ver_present && interop_database_match_version(INTEROP_ENABLE_AAC_CODEC, version) &&
+      interop_match_vendor_product_ids(INTEROP_ENABLE_AAC_CODEC, vendor, product)) {
+    APPL_TRACE_DEBUG("%s: vendor id, product id and version info matching with conf file", __func__);
+    vndr_prdt_ver_present = false;
+    aac_support = true;
+  } else {
+    if (bta_av_co_audio_is_aac_wl_enabled(&p_peer->addr)) {
+      if (bta_av_co_audio_device_addr_check_is_enabled(&p_peer->addr)) {
+        if (btif_storage_get_stored_remote_name(p_peer->addr, remote_name) &&
+            interop_match_addr(INTEROP_ENABLE_AAC_CODEC, &p_peer->addr) &&
+            interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
+          APPL_TRACE_DEBUG("%s: AAC is supported for this WL remote device", __func__);
+          aac_support = true;
+        } else {
+          APPL_TRACE_DEBUG("%s: RD is not present in name and address based check for AAC WL.",
+                             __func__);
+        }
+      } else {
+        if (btif_storage_get_stored_remote_name(p_peer->addr, remote_name) &&
+            interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
+          APPL_TRACE_DEBUG("%s: AAC is supported for this WL remote device", __func__);
+          aac_support = true;
+        } else {
+          APPL_TRACE_DEBUG("%s: RD is not present in name based check for AAC WL.",
+                            __func__);
+        }
+      }
+    } else {
+      if (bta_av_co_audio_device_addr_check_is_enabled(&p_peer->addr)) {
+        if (interop_match_addr_or_name(INTEROP_DISABLE_AAC_CODEC, &p_peer->addr)) {
+          APPL_TRACE_DEBUG("AAC is not supported for this BL remote device");
+        } else {
+          APPL_TRACE_DEBUG("%s: AAC is supported for this remote device", __func__);
+          aac_support = true;
+        }
+      } else {
+        if (btif_storage_get_stored_remote_name(p_peer->addr, remote_name) &&
+            interop_match_name(INTEROP_DISABLE_AAC_CODEC, remote_name)) {
+          APPL_TRACE_DEBUG("AAC is not supported for this BL remote device");
+        } else {
+          APPL_TRACE_DEBUG("%s: AAC is supported for this remote device", __func__);
+          aac_support = true;
+        }
+      }
+    }
+  }
+  return aac_support;
 }
 
 //
@@ -1104,8 +1301,6 @@ static const tBTA_AV_CO_SINK* bta_av_co_find_peer_src_supports_codec(
 //
 static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
   tBTA_AV_CO_SINK* p_sink = NULL;
-  char remote_name[BTM_MAX_REM_BD_NAME_LEN] = "";
-
   // Update all selectable codecs.
   // This is needed to update the selectable parameters for each codec.
   // NOTE: The selectable codec info is used only for informational purpose.
@@ -1122,9 +1317,21 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
         continue;
     }
 #endif
-    bta_av_co_audio_update_selectable_codec(*iter, p_peer);
+    if (!strcmp(iter->name().c_str(),"AAC")) {
+      if (A2DP_Get_AAC_VBR_Status()) {
+        APPL_TRACE_DEBUG("%s: AAC VBR is enabled, show AAC support in selectable capability", __func__);
+        bta_av_co_audio_update_selectable_codec(*iter, p_peer);
+      } else if (bta_av_co_check_peer_eligible_for_aac_codec(p_peer)) {
+        APPL_TRACE_DEBUG("%s: Show AAC support in selectable capability", __func__);
+        bta_av_co_audio_update_selectable_codec(*iter, p_peer);
+      } else {
+        APPL_TRACE_DEBUG("%s: Do not show AAC support in selectable capability", __func__);
+        continue;
+      }
+    } else {
+      bta_av_co_audio_update_selectable_codec(*iter, p_peer);
+    }
   }
-
   // Select the codec
   for (const auto& iter : p_peer->codecs->orderedSourceCodecs()) {
     APPL_TRACE_DEBUG("%s: trying codec %s", __func__, iter->name().c_str());
@@ -1134,45 +1341,24 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
       continue;
     }
 #endif
-    if (!strcmp(iter->name().c_str(),"AAC")) {
-      if (bta_av_co_audio_is_aac_wl_enabled(&p_peer->addr)) {
-        if (bta_av_co_audio_device_addr_check_is_enabled(&p_peer->addr)) {
-          if (btif_storage_get_stored_remote_name(p_peer->addr, remote_name) &&
-              interop_match_addr(INTEROP_ENABLE_AAC_CODEC, &p_peer->addr) &&
-              interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
-            APPL_TRACE_DEBUG("%s: AAC is supported for this WL remote device", __func__);
-            p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
-          } else {
-            APPL_TRACE_DEBUG("%s: RD is not present in name and address based check for AAC WL.",
-                               __func__);
-          }
-        } else {
-          if (btif_storage_get_stored_remote_name(p_peer->addr, remote_name) &&
-              interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
-            APPL_TRACE_DEBUG("%s: AAC is supported for this WL remote device", __func__);
-            p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
-          } else {
-            APPL_TRACE_DEBUG("%s: RD is not present in name based check for AAC WL.",
-                              __func__);
-          }
-        }
+    if (btif_av_peer_prefers_mandatory_codec(p_peer->addr)) {
+      if (!strcmp(iter->name().c_str(),"SBC")) {
+        p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
+        APPL_TRACE_DEBUG("%s: Mandatory codec is selected", __func__);
       } else {
-        if (bta_av_co_audio_device_addr_check_is_enabled(&p_peer->addr)) {
-          if (interop_match_addr_or_name(INTEROP_DISABLE_AAC_CODEC, &p_peer->addr)) {
-            APPL_TRACE_DEBUG("AAC is not supported for this BL remote device");
-          } else {
-            APPL_TRACE_DEBUG("%s: AAC is supported for this remote device", __func__);
-            p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
-          }
-        } else {
-          if (btif_storage_get_stored_remote_name(p_peer->addr, remote_name) &&
-              interop_match_name(INTEROP_DISABLE_AAC_CODEC, remote_name)) {
-            APPL_TRACE_DEBUG("AAC is not supported for this BL remote device");
-          } else {
-            APPL_TRACE_DEBUG("%s: AAC is supported for this remote device", __func__);
-            p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
-          }
-        }
+        APPL_TRACE_DEBUG("%s: HD codec option is disabled, continue", __func__);
+        continue;
+      }
+    }
+    if (!strcmp(iter->name().c_str(),"AAC")) {
+      if (A2DP_Get_AAC_VBR_Status()) {
+        APPL_TRACE_DEBUG("%s: AAC VBR is enabled, add AAC codec in sink capability", __func__);
+        p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
+      } else if (bta_av_co_check_peer_eligible_for_aac_codec(p_peer)) {
+        APPL_TRACE_DEBUG("%s: AAC codec is added in sink capability", __func__);
+        p_sink = bta_av_co_audio_codec_selected(*iter, p_peer);
+      } else {
+        APPL_TRACE_DEBUG("%s: Do not add AAC codec in sink capability", __func__);
       }
     } else {
       APPL_TRACE_DEBUG("%s: non-AAC codec has been selected.", __func__);
@@ -1181,28 +1367,39 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
 
     if (p_sink != NULL) {
       APPL_TRACE_DEBUG("%s: selected codec %s", __func__, iter->name().c_str());
-      if (p_peer->isIncoming) {
-        btav_a2dp_codec_index_t current_peer_codec_index = A2DP_SourceCodecIndex(p_peer->codec_config);
-        APPL_TRACE_DEBUG("%s: current_peer_codec_index: %d, isIncoming: %d",
-                            __func__, current_peer_codec_index, p_peer->isIncoming);
-        if (current_peer_codec_index != p_peer->codecIndextoCompare) {
-          p_peer->reconfig_needed = true;
-          p_peer->isIncoming = false;
-          APPL_TRACE_DEBUG("%s: incoming codec Idx mismatched with outgoing codec Idx: %d",
-                               __func__, p_peer->reconfig_needed);
+      if ((p_peer->num_rx_sinks != p_peer->num_sinks) &&
+          (p_peer->num_sup_sinks != BTA_AV_CO_NUM_ELEMENTS(p_peer->sinks))) {
+        APPL_TRACE_DEBUG("%s: GetCap did not complete, avoid sending codec config updated evt", __func__);
+      } else {
+        if (p_peer->isIncoming) {
+          btav_a2dp_codec_index_t current_peer_codec_index = A2DP_SourceCodecIndex(p_peer->codec_config);
+          APPL_TRACE_DEBUG("%s: current_peer_codec_index: %d, isIncoming: %d",
+                              __func__, current_peer_codec_index, p_peer->isIncoming);
+          if (current_peer_codec_index != p_peer->codecIndextoCompare) {
+            if (p_peer->is_active_peer) {
+              p_peer->reconfig_needed = true;
+              p_peer->isIncoming = false;
+              p_peer->rcfg_pend_active = false;
+              APPL_TRACE_DEBUG("%s: incoming codec Idx mismatched with outgoing codec Idx: %d",
+                                   __func__, p_peer->reconfig_needed);
+            } else {
+              p_peer->rcfg_pend_active = true;
+              APPL_TRACE_DEBUG("%s: bta av stream of peer is not opened: %d, pending reconfig",
+                                   __func__, p_peer->rcfg_pend_active);
+              break;
+            }
+          }
         }
+        // NOTE: Conditionally dispatch the event to make sure a callback with
+        // the most recent codec info is generated.
+        btif_dispatch_sm_event(BTIF_AV_SOURCE_CONFIG_UPDATED_EVT, (void *)p_peer->addr.address,
+                         sizeof(RawAddress));
       }
       break;
     }
     APPL_TRACE_DEBUG("%s: cannot use codec %s", __func__, iter->name().c_str());
   }
-
-  // NOTE: Unconditionally dispatch the event to make sure a callback with
-  // the most recent codec info is generated.
-  btif_dispatch_sm_event(BTIF_AV_SOURCE_CONFIG_UPDATED_EVT, (void *)p_peer->addr.address,
-                   sizeof(RawAddress));
   APPL_TRACE_DEBUG("%s BDA:%s", __func__, p_peer->addr.ToString().c_str());
-
   return p_sink;
 }
 
@@ -1211,8 +1408,7 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_set_codec(tBTA_AV_CO_PEER* p_peer) {
 static tBTA_AV_CO_SINK* bta_av_co_audio_codec_selected(
     A2dpCodecConfig& codec_config, tBTA_AV_CO_PEER* p_peer) {
   uint8_t new_codec_config[AVDT_CODEC_SIZE];
-
-  APPL_TRACE_DEBUG("%s", __func__);
+  APPL_TRACE_DEBUG("%s: num_sup_sinks: %d", __func__, p_peer->num_sup_sinks);
 
   // Find the peer sink for the codec
   tBTA_AV_CO_SINK* p_sink = NULL;
@@ -1250,15 +1446,35 @@ static tBTA_AV_CO_SINK* bta_av_co_audio_codec_selected(
   }
 
   /*
-  ** In case of acceptor or remote initiated connection need to update enocder with codec config
-  ** details as sent by remote during set config
+  ** In case of acceptor or remote initiated connection need to update enocder
+  ** and audio config with codec config details as sent by remote during set config
   */
   if (p_peer->acp == true && isDevUiReq != true  && p_peer->rcfg_done != true) {
-    /* check if sample rate or channel mode is non-zero (remote set-conf) and
+    /* check if sample rate is non-zero (remote set-conf) and
      * cache peer config for possibility of reconfiguation for better config */
-    if ((codec_config.ota_codec_peer_config_[9] != 0) && (codec_config.ota_codec_peer_config_[10] != 0)) {
-      memcpy(codec_config.ota_codec_config_, codec_config.ota_codec_peer_config_, AVDT_CODEC_SIZE);
-      APPL_TRACE_WARNING("%s: Cache remote config for encoder update on codec select ", __func__);
+    A2dpCodecConfig* current_codec_ = p_peer->codecs->getCurrentCodecConfig();
+    if (current_codec_ != nullptr) {
+      btav_a2dp_codec_config_t update_codec_config = current_codec_->getCodecConfig();
+      /* check if sample rate is non-zero (remote set-conf) and
+       * cache peer config for possibility of reconfiguation for better config */
+      if (A2DP_SourceCodecIndex(codec_config.ota_codec_peer_config_) ==
+        BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC && codec_config.ota_codec_peer_config_[9] != 0) {
+        uint8_t sampleRate = codec_config.ota_codec_peer_config_[9];
+        if (sampleRate & A2DP_LDAC_SAMPLING_FREQ_44100) {
+          update_codec_config.sample_rate = BTAV_A2DP_CODEC_SAMPLE_RATE_44100;
+        } else if (sampleRate & A2DP_LDAC_SAMPLING_FREQ_48000) {
+          update_codec_config.sample_rate = BTAV_A2DP_CODEC_SAMPLE_RATE_48000;
+        } else if (sampleRate & A2DP_LDAC_SAMPLING_FREQ_88200) {
+          update_codec_config.sample_rate = BTAV_A2DP_CODEC_SAMPLE_RATE_88200;
+        } else if (sampleRate & A2DP_LDAC_SAMPLING_FREQ_96000) {
+          update_codec_config.sample_rate = BTAV_A2DP_CODEC_SAMPLE_RATE_96000;
+        }
+        APPL_TRACE_WARNING("%s: Update encoder config with peer config ", __func__);
+        if (p_peer->codecs->updateCodecConfig(update_codec_config))
+          memcpy(codec_config.ota_codec_config_, codec_config.ota_codec_peer_config_, AVDT_CODEC_SIZE);
+      }
+    } else {
+      APPL_TRACE_WARNING("%s: current codec is NULL, do not update encoder and audio config ", __func__);
     }
   }
 
@@ -1278,28 +1494,11 @@ static bool bta_av_co_audio_update_selectable_codec(
     A2dpCodecConfig& codec_config, const tBTA_AV_CO_PEER* p_peer) {
   uint8_t new_codec_config[AVDT_CODEC_SIZE];
 
-  APPL_TRACE_DEBUG("%s", __func__);
+  APPL_TRACE_DEBUG("%s: num_sup_sinks: %d", __func__, p_peer->num_sup_sinks);
 
   // Find the peer sink for the codec
-  const tBTA_AV_CO_SINK* p_sink = NULL;
-  for (size_t index = 0; index < p_peer->num_sup_sinks; index++) {
-    btav_a2dp_codec_index_t peer_codec_index =
-        A2DP_SourceCodecIndex(p_peer->sinks[index].codec_caps);
-    APPL_TRACE_DEBUG("%s ind: %d, peer_codec_index : %d :: codec_config.codecIndex() : %d",
-           __func__, index, peer_codec_index, codec_config.codecIndex());
-    if (peer_codec_index != codec_config.codecIndex()) {
-      continue;
-    }
-    if (!bta_av_co_audio_sink_supports_cp(&p_peer->sinks[index])) {
-      APPL_TRACE_DEBUG(
-          "%s: peer sink for codec %s does not support "
-          "Copy Protection",
-          __func__, codec_config.name().c_str());
-      continue;
-    }
-    p_sink = &p_peer->sinks[index];
-    break;
-  }
+  const tBTA_AV_CO_SINK* p_sink = bta_av_co_find_peer_src_supports_codec_index(
+                                  p_peer, codec_config.codecIndex());
   if (p_sink == NULL) {
     // The peer sink device does not support this codec
     return false;
@@ -1344,7 +1543,6 @@ void bta_av_co_get_peer_params(tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params) {
   uint16_t min_mtu = 0xFFFF;
   int index = btif_max_av_clients;
   const tBTA_AV_CO_PEER* p_peer;
-  char AAC_frame_ctrl_val[PROPERTY_VALUE_MAX] = {'\0'};
 
   APPL_TRACE_DEBUG("%s", __func__);
   CHECK(p_peer_params != nullptr);
@@ -1371,17 +1569,15 @@ void bta_av_co_get_peer_params(tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params) {
                                __func__, MAX_2MBPS_AVDTP_MTU);
       min_mtu = MAX_2MBPS_AVDTP_MTU;
     }
-    bool is_AAC_frame_ctrl_stack_enable = false;
-    osi_property_get("persist.vendor.btstack.aac_frm_ctl.enabled", AAC_frame_ctrl_val, "false");
-    if (!strcmp(AAC_frame_ctrl_val, "true"))
-      is_AAC_frame_ctrl_stack_enable = true;
+    bool is_AAC_frame_ctrl_stack_enable = controller_get_interface()->supports_aac_frame_ctl();
+
     APPL_TRACE_DEBUG("%s: Stack AAC frame control enabled: %d", __func__, is_AAC_frame_ctrl_stack_enable);
     if (is_AAC_frame_ctrl_stack_enable && btif_av_is_peer_edr() &&
                                (btif_av_peer_supports_3mbps() == FALSE)) {
       // This condition would be satisfied only if the remote device is
       // EDR and supports only 2 Mbps, but the effective AVDTP MTU size
       // exceeds the 2DH5 packet size.
-      APPL_TRACE_DEBUG("%s The remote devce is EDR but does not support 3Mbps", __func__);
+      APPL_TRACE_DEBUG("%s The remote devce is EDR but does not support 3 Mbps", __func__);
       if (min_mtu > MAX_2MBPS_AVDTP_MTU) {
         min_mtu = MAX_2MBPS_AVDTP_MTU;
         APPL_TRACE_WARNING("%s Restricting AVDTP MTU size to %d", __func__, min_mtu);
@@ -1425,6 +1621,7 @@ bool bta_av_co_set_codec_user_config(
   tBTA_AV_HNDL hndl = btif_av_get_reconfig_dev_hndl();
   // Find the peer that is currently open
   tBTA_AV_CO_PEER* p_peer = nullptr;
+  APPL_TRACE_DEBUG("%s: hndl: %d", __func__, hndl);
   if (hndl > 0)
     p_peer = bta_av_co_get_peer(hndl);
   else {
@@ -1444,23 +1641,29 @@ bool bta_av_co_set_codec_user_config(
 
   if(codec_user_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE) {
     if (codec_user_config.codec_specific_4 > 0 ) {
+      //ENCODER_BTSCAN_AND_BATTERY_LEVEL_MASK is ORing of
+      //Battery level indication(0x0000-0x000F) and BTcontrol(0x8000)
       const uint16_t ENCODER_MODE_MASK = 0x3000;
       uint16_t encoder_mode = codec_user_config.codec_specific_4 & ENCODER_MODE_MASK;
-      if (encoder_mode > 0) {
+      if (encoder_mode == APTX_HQ || encoder_mode == APTX_LL) {
         APPL_TRACE_DEBUG("%s: Updating Encoder Mode to: %x", __func__, encoder_mode);
         BTA_AvUpdateEncoderMode(encoder_mode);
       }
+      if(codec_user_config.codec_specific_4 > 0) {
+        APPL_TRACE_DEBUG("%s: Updating Extended Aptx Data: %x", __func__, codec_user_config.codec_specific_4);
+        BTA_AvUpdateAptxData(codec_user_config.codec_specific_4);
+      }
 
-      const uint32_t BLESCAN_MASK = 0x060000;
-      const uint32_t BLESCAN_OFF = 0x020000;
-      const uint32_t BLESCAN_ON = 0x040000;
-      uint32_t blescan_mode = codec_user_config.codec_specific_4 & BLESCAN_MASK;
-      if (blescan_mode & BLESCAN_OFF) {
-        APPL_TRACE_DEBUG("%s: Disabling BLE Scanning", __func__);
-        btif_gatt_get_interface()->scanner->Scan(false);
-      } else if (blescan_mode & BLESCAN_ON) {
-        APPL_TRACE_DEBUG("%s: Enabling BLE Scanning", __func__);
-        //btif_gatt_get_interface()->scanner->Scan(true);
+      bool ble_scan_off = ((codec_user_config.codec_specific_4 & APTX_SCAN_CONTROL_MASK) == APTX_SCAN_CONTROL_MASK);
+      if(!ble_scan_off)
+        return success;
+
+      switch(codec_user_config.codec_specific_4 & APTX_MODE_MASK) {
+        case APTX_ULL:
+        case APTX_LL:
+          APPL_TRACE_DEBUG("%s: Disabling BLE Scanning", __func__);
+          btif_gatt_get_interface()->scanner->Scan(false);
+          break;
       }
       return success;
     }
@@ -1508,7 +1711,8 @@ bool bta_av_co_set_codec_user_config(
     goto done;
   }
 
-  if (restart_output) {
+  if (restart_output ||
+      ((hndl > 0) && btif_av_check_is_retry_reconfig_set(bt_addr))) {
     uint8_t num_protect = 0;
 #if (BTA_AV_CO_CP_SCMS_T == TRUE)
     if (p_peer->cp_active) num_protect = AVDT_CP_INFO_LEN;
@@ -1534,10 +1738,25 @@ bool bta_av_co_set_codec_user_config(
       p_peer->acp = false;
       isDevUiReq = false;
     }
-    APPL_TRACE_DEBUG("%s: call BTA_AvReconfig(x%x)", __func__, p_peer->handle);
-    BTA_AvReconfig(p_peer->handle, true, p_sink->sep_info_idx,
-                   p_peer->codec_config, num_protect, bta_av_co_cp_scmst);
-    p_peer->rcfg_done = true;
+
+
+    APPL_TRACE_DEBUG("%s: rcfg_pend_active: %d", __func__, p_peer->rcfg_pend_active);
+    if (!p_peer->rcfg_pend_active) {
+      btif_av_set_reconfig_flag(hndl);
+      uint8_t index = BTA_AV_CO_AUDIO_HNDL_TO_INDX(hndl);
+      if (index == btif_a2dp_source_last_remote_start_index()) {
+        APPL_TRACE_EVENT("%s: clear remote start idx: %d as part of Reconfig", __func__, index);
+        btif_a2dp_source_cancel_remote_start();
+      }
+      APPL_TRACE_DEBUG("%s: call BTA_AvReconfig(x%x)", __func__, p_peer->handle);
+      BTA_AvReconfig(p_peer->handle, true, p_sink->sep_info_idx,
+                     p_peer->codec_config, num_protect, bta_av_co_cp_scmst);
+      p_peer->rcfg_done = true;
+      p_peer->reconfig_needed = false;
+      if (btif_av_check_is_retry_reconfig_set(bt_addr)) {
+        btif_av_clear_is_retry_reconfig_flag(bt_addr);
+      }
+    }
   }
 
 done:
@@ -1555,8 +1774,12 @@ done:
                          sizeof(RawAddress));
     APPL_TRACE_DEBUG("%s BDA: %s", __func__, p_peer->addr.ToString().c_str());
   }
-  if (!success || !restart_output) {
-    APPL_TRACE_DEBUG("%s:reseting codec reconfig flag",__func__);
+
+  if (btif_av_check_is_cached_reconfig_event_exist(bt_addr) &&
+      btif_av_check_is_reconfig_pending_flag_set(bt_addr)) {
+    APPL_TRACE_DEBUG("%s: reconfig event exist to process.",__func__);
+  } else if (!success || !restart_output) {
+    APPL_TRACE_DEBUG("%s: reseting codec reconfig flag",__func__);
     btif_av_reset_codec_reconfig_flag(bt_addr);
   }
   return success;
@@ -1691,11 +1914,13 @@ bool bta_av_co_set_codec_audio_config(
       APPL_TRACE_WARNING("%s: not all peer's capabilities have been retrieved",
                          __func__);
     } else {
+      btif_av_set_reconfig_flag(p_peer->handle);
       APPL_TRACE_DEBUG("%s: call BTA_AvReconfig(x%x)", __func__,
                        p_peer->handle);
       BTA_AvReconfig(p_peer->handle, true, p_sink->sep_info_idx,
                      p_peer->codec_config, num_protect, bta_av_co_cp_scmst);
       p_peer->rcfg_done = true;
+      p_peer->reconfig_needed = false;
     }
   }
 
@@ -1793,12 +2018,11 @@ bool bta_av_co_is_scrambling_enabled() {
 
 bool bta_av_co_is_44p1kFreq_enabled() {
   uint8_t add_on_features_size = 0;
-  const bt_device_features_t * add_on_features_list = NULL;
+  const bt_device_soc_add_on_features_t * add_on_features_list = NULL;
 
-  add_on_features_list = controller_get_interface()->get_add_on_features(&add_on_features_size);
+  add_on_features_list = controller_get_interface()->get_soc_add_on_features(&add_on_features_size);
   if (add_on_features_size == 0) {
-    BTIF_TRACE_WARNING(
-        "BT controller doesn't add on features");
+    BTIF_TRACE_ERROR("%s: BT controller doesn't add on features", __func__);
     return false;
   }
 
@@ -1810,11 +2034,84 @@ bool bta_av_co_is_44p1kFreq_enabled() {
   return false;
 }
 
+void bta_av_co_check_and_add_soc_supported_codecs(const uint8_t* p_codec_info) {
+  const char *codec_name = A2DP_CodecName(p_codec_info);
+
+  uint8_t add_on_features_size = 0;
+  const bt_device_soc_add_on_features_t * add_on_features_list = NULL;
+
+  APPL_TRACE_DEBUG("%s: codec_name: %s", __func__, A2DP_CodecName(p_codec_info));
+  add_on_features_list = controller_get_interface()->get_soc_add_on_features(&add_on_features_size);
+  if (add_on_features_size == 0) {
+    BTIF_TRACE_ERROR("%s: BT controller doesn't add on features", __func__);
+    return;
+  }
+
+  if (add_on_features_list != NULL) {
+    if ((strcmp(codec_name,"SBC") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_SBC_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports SBC, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+    if ((strcmp(codec_name,"AAC") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_AAC_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports AAC, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+    if ((strcmp(codec_name,"aptX") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_APTX_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports aptX, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+    if ((strcmp(codec_name,"aptX-HD") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_APTX_HD_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports aptX-HD, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+    if ((strcmp(codec_name,"aptX-adaptive") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_APTX__ADAPTIVE_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports aptX-AD, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+    if ((strcmp(codec_name,"aptX-TWS") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_APTX__TWS_PLUS_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports aptX-TWS, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+    if ((strcmp(codec_name,"LDAC") == 0) &&
+        HCI_SPLIT_A2DP_SOURCE_LDAC_SUPPORTED(add_on_features_list->as_array)) {
+      APPL_TRACE_DEBUG("%s: Both SoC and remote supports LDAC, append to supported_codecs conf", __func__);
+      bta_av_co_append_to_supported_codecs(p_codec_info);
+      return;
+    }
+  }
+}
+
+void bta_av_co_append_to_supported_codecs(const uint8_t* p_codec_info) {
+  APPL_TRACE_DEBUG("%s", __func__);
+
+  if (supported_codecs.empty()) {
+      supported_codecs.append(A2DP_CodecName(p_codec_info));
+      APPL_TRACE_DEBUG("%s: First codec entry %s",__func__,supported_codecs.c_str());
+  } else {
+      supported_codecs.append(",");
+      supported_codecs.append(A2DP_CodecName(p_codec_info));
+      APPL_TRACE_DEBUG("%s: Next codec entry %s",__func__,supported_codecs.c_str());
+  }
+}
+
 void bta_av_co_init(
-    const std::vector<btav_a2dp_codec_config_t>& codec_priorities) {
+    const std::vector<btav_a2dp_codec_config_t>& codec_priorities,
+    std::vector<btav_a2dp_codec_config_t>& offload_enabled_codecs_config) {
   APPL_TRACE_DEBUG("%s", __func__);
   RawAddress bt_addr;
-  char value[PROPERTY_VALUE_MAX] = {'\0'};
+  const char *a2dp_ofload_cap = controller_get_interface()->get_a2dp_offload_cap();
   tBTA_AV_CO_PEER* p_peer;
   /* Protect access to bta_av_co_cb.codec_config */
   mutex_global_lock();
@@ -1831,22 +2128,19 @@ void bta_av_co_init(
   bool a2dp_offload = btif_av_is_split_a2dp_enabled();
   bool isScramblingSupported = bta_av_co_is_scrambling_enabled();
   bool is44p1kFreqSupported = bta_av_co_is_44p1kFreq_enabled();
-  osi_property_get("persist.vendor.btstack.a2dp_offload_cap", value, "false");
-  A2DP_SetOffloadStatus(a2dp_offload, value, isScramblingSupported, is44p1kFreqSupported);
+
+  A2DP_SetOffloadStatus(a2dp_offload, a2dp_ofload_cap, isScramblingSupported,
+                       is44p1kFreqSupported, offload_enabled_codecs_config);
+
 /* SPLITA2DP */
   bool isMcastSupported = btif_av_is_multicast_supported();
-  bool isShoSupported = (btif_max_av_clients > 1) ? true : false;
-  if (a2dp_offload) {
-    isMcastSupported = false;
-    isShoSupported = false;
-  }
   for (size_t i = 0; i < BTA_AV_CO_NUM_ELEMENTS(bta_av_co_cb.peers); i++) {
     p_peer = &bta_av_co_cb.peers[i];
-    if (p_peer != NULL)
+    if (p_peer != NULL && p_peer->codecs == NULL)
       p_peer->codecs = new A2dpCodecs(codec_priorities);
 
     if (p_peer->codecs != nullptr)
-      p_peer->codecs->init(isMcastSupported, isShoSupported);
+      p_peer->codecs->init(isMcastSupported);
 
     p_peer->isIncoming = false;
   }
@@ -1868,18 +2162,16 @@ void bta_av_co_peer_init(
   tBTA_AV_CO_PEER* p_peer;
   bool a2dp_offload = btif_av_is_split_a2dp_enabled();
   bool isMcastSupported = btif_av_is_multicast_supported();
-  bool isShoSupported = (btif_max_av_clients > 1) ? true : false;
   if (a2dp_offload) {
     isMcastSupported = false;
-    isShoSupported = false;
   }
 
   p_peer = &bta_av_co_cb.peers[index];
-  if (p_peer != NULL)
+  if (p_peer != NULL &&  p_peer->codecs == NULL)
     p_peer->codecs = new A2dpCodecs(codec_priorities);
 
   if (p_peer->codecs != nullptr)
-    p_peer->codecs->init(isMcastSupported, isShoSupported);
+    p_peer->codecs->init(isMcastSupported);
 
   p_peer->isIncoming = false;
 }

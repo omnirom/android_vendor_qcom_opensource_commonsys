@@ -51,6 +51,15 @@ void btif_a2dp_on_stopped(tBTA_AV_SUSPEND* p_av_suspend);
 // |tBTA_AV_SUSPEND|.
 void btif_a2dp_on_suspended(tBTA_AV_SUSPEND* p_av_suspend);
 
+// BA suspended ack
+void btif_ba_audio_on_suspended(uint8_t result);
+
+// BA stopped ack
+void btif_ba_audio_on_stopped(uint8_t result);
+
+// BA started ack
+void btif_ba_audio_on_started(uint8_t result);
+
 // Process 'offload start' request from the BTIF state machine to start
 // offloading of the A2DP streaming.
 // |status| is the processing status of the request prior to this call.
@@ -67,5 +76,5 @@ void btif_debug_a2dp_dump(int fd);
 void btif_a2dp_sink_on_init(void);
 
 // Honor remote start
-void btif_a2dp_honor_remote_start(struct alarm_t *remote_start_alarm, int index);
+void btif_a2dp_honor_remote_start(struct alarm_t **remote_start_alarm, int index);
 #endif /* BTIF_A2DP_H */

@@ -99,7 +99,7 @@ extern void btu_hci_msg_process(BT_HDR* p_msg);
  * Returns          None
  *
  *****************************************************************************/
-void post_to_hci_message_loop(const tracked_objects::Location& from_here,
+void post_to_hci_message_loop(const base::Location& from_here,
                               BT_HDR* p_msg) {
   base::MessageLoop* hci_message_loop = get_message_loop();
   if (!hci_message_loop || !hci_message_loop->task_runner().get()) {
@@ -193,6 +193,21 @@ void bte_main_disable(void) {
   module_shut_down(get_module(BTSNOOP_MODULE));
 
   BTU_ShutDown();
+}
+
+/******************************************************************************
+ *
+ * Function         bte_main_hci_close
+ *
+ * Description      BTE MAIN API - closes hci module
+ *
+ * Returns          None
+ *
+ *****************************************************************************/
+void bte_main_hci_close(void) {
+  APPL_TRACE_DEBUG("%s", __func__);
+
+  module_shut_down(get_module(HCI_MODULE));
 }
 
 /******************************************************************************

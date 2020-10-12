@@ -98,6 +98,7 @@
 #define BTA_AV_RS_TIME_VAL 1000
 #endif
 
+extern bool tws_state_supported;
 /* state machine states */
 enum { BTA_AV_INIT_ST, BTA_AV_OPEN_ST };
 
@@ -185,9 +186,9 @@ static void bta_av_rpc_conn(tBTA_AV_DATA* p_data);
 static void bta_av_api_to_ssm(tBTA_AV_DATA* p_data);
 
 static void bta_av_sco_chg_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                 uint8_t app_id, const RawAddress* peer_addr);
+                                 uint8_t app_id, const RawAddress& peer_addr);
 static void bta_av_sys_rs_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                uint8_t app_id, const RawAddress* peer_addr);
+                                uint8_t app_id, const RawAddress& peer_addr);
 
 static void bta_av_api_enable_multicast(tBTA_AV_DATA *p_data);
 static void bta_av_api_update_max_av_clients(tBTA_AV_DATA * p_data);
@@ -197,6 +198,9 @@ bool bta_av_multiple_streams_started(void);
 extern int btif_get_is_remote_started_idx();
 extern int btif_max_av_clients;
 #if (TWS_ENABLED == TRUE)
+#if (TWS_STATE_ENABLED == TRUE)
+static void bta_av_api_set_tws_earbud_state(tBTA_AV_DATA * p_data);
+#endif
 static void bta_av_api_set_tws_earbud_role(tBTA_AV_DATA * p_data);
 static void bta_av_api_set_is_tws_device(tBTA_AV_DATA * p_data);
 #endif
@@ -217,6 +221,7 @@ const tBTA_AV_NSM_ACT bta_av_nsm_act[] = {
     bta_av_rc_retry_disc,    /* BTA_AV_AVRC_RETRY_DISC_EVT */
     bta_av_conn_chg,         /* BTA_AV_CONN_CHG_EVT */
     bta_av_dereg_comp,       /* BTA_AV_DEREG_COMP_EVT */
+    bta_av_active_browse,    /* BTA_AV_BROWSE_ACTIVE_EVT */
 #if (AVDT_REPORTING == TRUE)
     bta_av_rpc_conn, /* BTA_AV_AVDT_RPT_CONN_EVT */
 #endif
@@ -226,7 +231,11 @@ const tBTA_AV_NSM_ACT bta_av_nsm_act[] = {
     bta_av_api_enable_multicast,    /* BTA_AV_ENABLE_MULTICAST_EVT */
     bta_av_rc_collission_detected, /* BTA_AV_RC_COLLISSION_DETECTED_EVT */
     bta_av_update_enc_mode, /* BTA_AV_UPDATE_ENCODER_MODE_EVT */
+    bta_av_update_aptx_data,     /* BTA_AV_UPDATE_APTX_DATA_EVT */
 #if (TWS_ENABLED == TRUE)
+#if (TWS_STATE_ENABLED == TRUE)
+    bta_av_api_set_tws_earbud_state, /* BTA_AV_SET_EARBUD_STATE_EVT */
+#endif
     bta_av_api_set_tws_earbud_role, /* BTA_AV_SET_EARBUD_ROLE_EVT */
     bta_av_api_set_is_tws_device, /* BTA_AV_SET_TWS_DEVICE_EVT */
 #endif
@@ -302,7 +311,7 @@ static void bta_av_api_enable(tBTA_AV_DATA* p_data) {
  * Returns          void
  *
  ******************************************************************************/
-static tBTA_AV_SCB* bta_av_addr_to_scb(const RawAddress& bd_addr) {
+tBTA_AV_SCB* bta_av_addr_to_scb(const RawAddress& bd_addr) {
   tBTA_AV_SCB* p_scb = NULL;
   int xx;
 
@@ -397,6 +406,8 @@ static tBTA_AV_SCB* bta_av_alloc_scb(tBTA_AV_CHNL chnl) {
         p_ret->hdi = xx;
         p_ret->a2dp_list = list_new(NULL);
         p_ret->avrc_ct_timer = alarm_new("bta_av.avrc_ct_timer");
+        p_ret->cache_setconfig = NULL;
+        p_ret->rc_ccb_alloc_handle = BTA_AV_RC_HANDLE_NONE;
         bta_av_cb.p_scb[xx] = p_ret;
         APPL_TRACE_EVENT("AV: Alloc success, handle is =%d", p_ret->hndl);
         break;
@@ -404,6 +415,17 @@ static tBTA_AV_SCB* bta_av_alloc_scb(tBTA_AV_CHNL chnl) {
     }
   }
   return p_ret;
+}
+
+void bta_av_free_scb(tBTA_AV_SCB* p_scb) {
+  if (p_scb == nullptr) return;
+  uint8_t scb_index = p_scb->hdi;
+  CHECK(scb_index < BTA_AV_NUM_STRS);
+
+  CHECK(p_scb == bta_av_cb.p_scb[scb_index]);
+  bta_av_cb.p_scb[scb_index] = nullptr;
+  alarm_free(p_scb->avrc_ct_timer);
+  osi_free(p_scb);
 }
 
 /*******************************************************************************
@@ -691,7 +713,7 @@ static void bta_av_api_register(tBTA_AV_DATA* p_data) {
         }
         /* start listening when A2DP is registered */
         if (bta_av_cb.features & BTA_AV_FEAT_RCTG)
-          bta_av_rc_create(&bta_av_cb, AVCT_ACP, p_scb->hdi, BTA_AV_NUM_LINKS + 1);
+          bta_av_rc_create(&bta_av_cb, AVCT_ACP, p_scb->hdi, BTA_AV_NUM_LINKS + 1, NULL);
 
         /* if the AV and AVK are both supported, it cannot support the CT role
          */
@@ -709,7 +731,7 @@ static void bta_av_api_register(tBTA_AV_DATA* p_data) {
                 BTA_ID_AV);
 #endif
 #endif
-            bta_av_rc_create(&bta_av_cb, AVCT_ACP, 0, BTA_AV_NUM_LINKS + 1);
+            bta_av_rc_create(&bta_av_cb, AVCT_ACP, 0, BTA_AV_NUM_LINKS + 1, NULL);
           }
 #if (BTA_AR_INCLUDED == TRUE)
           /* create an SDP record as AVRC CT. We create 1.3 for SOURCE
@@ -781,6 +803,7 @@ static void bta_av_ci_data(tBTA_AV_DATA* p_data) {
   tBTA_AV_SCB* p_scb;
   int i;
   uint8_t chnl = (uint8_t)p_data->hdr.layer_specific;
+  APPL_TRACE_DEBUG("%s: chnl: 0x%x", __func__, chnl);
 
   for (i = 0; i < btif_max_av_clients; i++) {
     p_scb = bta_av_cb.p_scb[i];
@@ -789,6 +812,8 @@ static void bta_av_ci_data(tBTA_AV_DATA* p_data) {
      * in Dual Handoff mode, get SCB where START is done.
      */
     if (p_scb && (p_scb->chnl == chnl) && (p_scb->started)) {
+      APPL_TRACE_DEBUG("%s: p_scb->chnl: 0x%x, started: %d, hdi: %d",
+                        __func__, p_scb->chnl, p_scb->started, p_scb->hdi);
       if (p_scb->hdi == btif_get_is_remote_started_idx()) {
           APPL_TRACE_WARNING("%s: Not to send data to remote Started index %d",
             __func__, p_scb->hdi);
@@ -900,10 +925,19 @@ static void bta_av_api_to_ssm(tBTA_AV_DATA* p_data) {
       }
 #if (TWS_ENABLED == TRUE)
       else {
-          if (tws_device > 1 &&
-           ((bta_av_cb.p_scb[xx] != NULL && bta_av_cb.p_scb[xx]->tws_device &&
-            bta_av_cb.p_scb[xx]->peer_addr != p_scb->peer_addr) ||
-             (tws_pair_found && bta_av_cb.p_scb[xx]->peer_addr !=  tws_pair_addr))) {
+          if (tws_device > 1 && bta_av_cb.p_scb[xx] != NULL && bta_av_cb.p_scb[xx]->tws_device &&
+           ((bta_av_cb.p_scb[xx]->peer_addr != p_scb->peer_addr) ||
+            (tws_pair_found && bta_av_cb.p_scb[xx]->peer_addr != tws_pair_addr))) {
+            APPL_TRACE_DEBUG("%s:peer_addr: %s eb state: %d",__func__,
+                bta_av_cb.p_scb[xx]->peer_addr.ToString().c_str(),bta_av_cb.p_scb[xx]->eb_state);
+#if (TWS_STATE_ENABLED == TRUE)
+            if (event == BTA_AV_AP_START_EVT && tws_state_supported &&
+              bta_av_cb.p_scb[xx]->eb_state == TWSP_EB_STATE_OUT_OF_EAR) {
+              APPL_TRACE_DEBUG("%s:EB not in ear skip start",__func__);
+              continue;
+            }
+#endif
+            APPL_TRACE_DEBUG("%s:Execute event %d",__func__,event);
             bta_av_ssm_execute(bta_av_cb.p_scb[xx], event, p_data);
           }
       }
@@ -933,6 +967,44 @@ static void bta_av_api_enable_multicast(tBTA_AV_DATA *p_data)
 }
 
 #if (TWS_ENABLED == TRUE)
+#if (TWS_STATE_ENABLED == TRUE)
+static void bta_av_api_set_tws_earbud_state(tBTA_AV_DATA * p_data)
+{
+  APPL_TRACE_DEBUG("%s:EB_STATE=%d",__func__,p_data->tws_set_earbud_state.eb_state);
+  tBTA_AV_SCB *p_scb = bta_av_hndl_to_scb(p_data->hdr.layer_specific);
+  RawAddress tws_pair_addr;
+  if (p_scb == NULL) {
+    APPL_TRACE_ERROR("bta_av_api_set_tws_earbud_state: scb not found");
+    return;
+  }
+  uint8_t previous_state = p_scb->eb_state;
+  p_scb->eb_state = p_data->tws_set_earbud_state.eb_state;
+  if (previous_state == TWSP_EB_STATE_UNKNOWN &&
+    p_scb->eb_state == TWSP_EB_STATE_OUT_OF_EAR &&
+    p_scb->started) {
+    bta_av_ssm_execute(p_scb, BTA_AV_AP_STOP_EVT, p_data);
+    return;
+  }
+
+  for (int i = 0; i < BTA_AV_NUM_STRS; i++) {
+    tBTA_AV_SCB *p_scbi;
+    p_scbi = bta_av_cb.p_scb[i];
+    if (p_scbi == NULL || p_scbi == p_scb) continue;
+    APPL_TRACE_DEBUG("%s:p_scbi is tws dev = %d",__func__,p_scbi->tws_device);
+    if (p_scbi->tws_device &&
+      (BTM_SecGetTwsPlusPeerDev(p_scb->peer_addr,
+                             tws_pair_addr) == true)) {
+      if ((tws_pair_addr == p_scbi->peer_addr) && (p_scbi->started || p_scbi->start_pending)) {
+        if (p_scb->eb_state == TWSP_EB_STATE_IN_EAR && !p_scb->started) {
+          APPL_TRACE_ERROR("%:streaming on other eb, sending start to eb",__func__);
+          bta_av_ssm_execute(p_scb, BTA_AV_AP_START_EVT, p_data);
+          return;
+        }
+      }
+    }
+  }
+}
+#endif
 static void bta_av_api_set_tws_earbud_role(tBTA_AV_DATA * p_data)
 {
   APPL_TRACE_DEBUG("bta_av_api_set_earbud_role = %d",p_data->tws_set_earbud_role.chn_mode);
@@ -1054,8 +1126,13 @@ bool bta_av_chk_start(tBTA_AV_SCB* p_scb) {
         if (p_scbi && p_scbi->chnl == BTA_AV_CHNL_AUDIO && p_scbi->co_started) {
           if (is_multicast_enabled == TRUE
 #if (TWS_ENABLED == TRUE)
-              || (p_scb->tws_device && p_scbi->tws_device && tws_pair_found &&
+              || ((p_scb->tws_device && p_scbi->tws_device && tws_pair_found &&
                  p_scbi->peer_addr == tws_pair_addr)
+#if (TWS_STATE_ENABLED == TRUE)
+              &&(!tws_state_supported || (tws_state_supported &&
+              p_scb->eb_state == TWSP_EB_STATE_IN_EAR))
+#endif
+            )
 #endif
             )
             start = true;
@@ -1118,7 +1195,7 @@ void bta_av_restore_switch(void) {
  ******************************************************************************/
 static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
                                 uint8_t id, uint8_t app_id,
-                                const RawAddress* peer_addr) {
+                                const RawAddress& peer_addr) {
   int i;
   tBTA_AV_SCB* p_scb = NULL;
   uint8_t cur_role;
@@ -1130,7 +1207,7 @@ static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
      * role change event */
     /* note that more than one SCB (a2dp & vdp) maybe waiting for this event */
     p_scb = bta_av_cb.p_scb[i];
-    if (p_scb && p_scb->peer_addr == *peer_addr) {
+    if (p_scb && p_scb->peer_addr == peer_addr) {
       tBTA_AV_ROLE_RES* p_buf =
           (tBTA_AV_ROLE_RES*)osi_malloc(sizeof(tBTA_AV_ROLE_RES));
       APPL_TRACE_DEBUG("new_role:%d, hci_status:x%x hndl: x%x", id, app_id,
@@ -1154,9 +1231,9 @@ static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
 
   /* restore role switch policy, if role switch failed */
   if ((HCI_SUCCESS != app_id) &&
-      (BTM_GetRole(*peer_addr, &cur_role) == BTM_SUCCESS) &&
+      (BTM_GetRole(peer_addr, &cur_role) == BTM_SUCCESS) &&
       (cur_role == BTM_ROLE_SLAVE)) {
-    bta_sys_set_policy(BTA_ID_AV, HCI_ENABLE_MASTER_SLAVE_SWITCH, *peer_addr);
+    bta_sys_set_policy(BTA_ID_AV, HCI_ENABLE_MASTER_SLAVE_SWITCH, peer_addr);
   }
 
   /* if BTA_AvOpen() was called for other device, which caused the role switch
@@ -1203,7 +1280,7 @@ static void bta_av_sys_rs_cback(UNUSED_ATTR tBTA_SYS_CONN_STATUS status,
  ******************************************************************************/
 static void bta_av_sco_chg_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
                                  UNUSED_ATTR uint8_t app_id,
-                                 UNUSED_ATTR const RawAddress* peer_addr) {
+                                 UNUSED_ATTR const RawAddress& peer_addr) {
   tBTA_AV_SCB* p_scb;
   int i;
   tBTA_AV_API_STOP stop;
@@ -1502,15 +1579,15 @@ bool bta_av_hdl_event(BT_HDR* p_msg) {
     return true; /* to free p_msg */
   }
   if (p_msg->event >= BTA_AV_FIRST_NSM_EVT) {
-    APPL_TRACE_VERBOSE("%s: AV nsm event=0x%x(%s)", __func__, p_msg->event,
-                       bta_av_evt_code(p_msg->event));
+    APPL_TRACE_VERBOSE("%s: AV nsm event=0x%x(%s) on handle = 0x%x", __func__,
+          p_msg->event, bta_av_evt_code(p_msg->event), p_msg->layer_specific);
     /* non state machine events */
     (*bta_av_nsm_act[p_msg->event - BTA_AV_FIRST_NSM_EVT])(
         (tBTA_AV_DATA*)p_msg);
   } else if (p_msg->event >= BTA_AV_FIRST_SM_EVT &&
              p_msg->event <= BTA_AV_LAST_SM_EVT) {
-    APPL_TRACE_VERBOSE("%s: AV sm event=0x%x(%s)", __func__, p_msg->event,
-                       bta_av_evt_code(p_msg->event));
+    APPL_TRACE_VERBOSE("%s: AV sm event=0x%x(%s) on handle = 0x%x", __func__,
+         p_msg->event, bta_av_evt_code(p_msg->event), p_msg->layer_specific);
     /* state machine events */
     bta_av_sm_execute(&bta_av_cb, p_msg->event, (tBTA_AV_DATA*)p_msg);
   } else {
@@ -1695,6 +1772,10 @@ const char* bta_av_evt_code(uint16_t evt_code) {
       return "MULTICAST_ENABLE";
     case BTA_AV_UPDATE_ENCODER_MODE_EVT:
       return "UPDATE_ENCODER_MODE";
+    case BTA_AV_UPDATE_APTX_DATA_EVT:
+      return "UPDATE_APTX_DATA";
+    case BTA_AV_RECONFIG_FAIL_EVT:
+      return "RECONFIG_FAIL";
     default:
       return "unknown";
   }

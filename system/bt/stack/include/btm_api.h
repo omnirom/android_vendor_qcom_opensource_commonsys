@@ -229,6 +229,17 @@ extern void BTM_VendorSpecificCommand(uint16_t opcode, uint8_t param_len,
 void btm_enable_soc_iot_info_report(bool enable);
 
 /*******************************************************************************
+**
+** Function         btm_enable_link_lpa_enh_pwr_ctrl
+**
+** Description      enable/disable lpa enhanced power control
+**
+** Returns          void
+**
+*******************************************************************************/
+void btm_enable_link_lpa_enh_pwr_ctrl(uint16_t hci_handle, bool enable);
+
+/*******************************************************************************
  *
  * Function         BTM_AllocateSCN
  *
@@ -1277,7 +1288,7 @@ extern uint8_t BTM_GetNumScoLinks(void);
  * Returns          true if registered OK, else false
  *
  ******************************************************************************/
-extern bool BTM_SecRegister(tBTM_APPL_INFO* p_cb_info);
+extern bool BTM_SecRegister(const tBTM_APPL_INFO* p_cb_info);
 
 /*******************************************************************************
  *
@@ -1466,7 +1477,7 @@ extern uint8_t BTM_SecClrService(uint8_t service_id);
  ******************************************************************************/
 extern bool BTM_SecAddDevice(const RawAddress& bd_addr, DEV_CLASS dev_class,
                              BD_NAME bd_name, uint8_t* features,
-                             uint32_t trusted_mask[], LINK_KEY link_key,
+                             uint32_t trusted_mask[], LinkKey* link_key,
                              uint8_t key_type, tBTM_IO_CAP io_cap,
                              uint8_t pin_length);
 
@@ -1505,7 +1516,7 @@ extern void BTM_SecClearSecurityFlags(const RawAddress& bd_addr);
  *
  ******************************************************************************/
 extern tBTM_STATUS BTM_SecGetDeviceLinkKey(const RawAddress& bd_addr,
-                                           LINK_KEY link_key);
+                                           LinkKey* link_key);
 
 /*******************************************************************************
  *
@@ -1597,6 +1608,18 @@ extern tBTM_STATUS BTM_SecBondByTransport(const RawAddress& bd_addr,
  *
  ******************************************************************************/
 extern tBTM_STATUS BTM_SecBondCancel(const RawAddress& bd_addr);
+
+
+/*******************************************************************************
+ *
+ * Function         BTM_SecResetPairingFlag
+ *
+ * Description      This function is called to reset pairing flag
+ *
+ * Parameters:      bd_addr      - Address of the peer device
+  *
+ ******************************************************************************/
+extern tBTM_STATUS BTM_SecResetPairingFlag(const RawAddress& bd_addr);
 
 /*******************************************************************************
  *
@@ -1721,7 +1744,7 @@ extern void BTM_ReadLocalOobData(void);
  *
  ******************************************************************************/
 extern void BTM_RemoteOobDataReply(tBTM_STATUS res, const RawAddress& bd_addr,
-                                   BT_OCTET16 c, BT_OCTET16 r);
+                                   const Octet16& c, const Octet16& r);
 
 /*******************************************************************************
  *
@@ -1742,7 +1765,8 @@ extern void BTM_RemoteOobDataReply(tBTM_STATUS res, const RawAddress& bd_addr,
  *
  ******************************************************************************/
 extern uint16_t BTM_BuildOobData(uint8_t* p_data, uint16_t max_len,
-                                 BT_OCTET16 c, BT_OCTET16 r, uint8_t name_len);
+                                 const Octet16& c, const Octet16& r,
+                                 uint8_t name_len);
 
 /*******************************************************************************
  *
@@ -1979,6 +2003,28 @@ extern void BTM_SetWifiState(bool status);
  *
  ******************************************************************************/
 extern bool BTM_GetWifiState(void);
+
+/*******************************************************************************
+ *
+ * Function         BTM_SetPowerBackOffState
+ *
+ * Description      This function sets PowerBackOff state.
+ *
+ * Returns          void
+ *
+ ******************************************************************************/
+extern void BTM_SetPowerBackOffState(bool status);
+
+/*******************************************************************************
+ *
+ * Function         BTM_GetPowerBackOffState
+ *
+ * Description      This function gets PowerBackOff state.
+ *
+ * Returns          PowerBackOff status
+ *
+ ******************************************************************************/
+extern bool BTM_GetPowerBackOffState(void);
 
 /*******************************************************************************
  *

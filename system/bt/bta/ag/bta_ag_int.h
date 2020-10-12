@@ -273,8 +273,19 @@ typedef enum {
   BTA_AG_SCO_MSBC_SETTINGS_T1,
 } tBTA_AG_SCO_MSBC_SETTINGS;
 
+#if (SWB_ENABLED == TRUE)
+typedef enum {
+  BTA_AG_SCO_SWB_SETTINGS_Q0 = 0, /* preferred/default when codec is SWB */
+  BTA_AG_SCO_SWB_SETTINGS_Q1 = 4,
+  BTA_AG_SCO_SWB_SETTINGS_Q2 = 6,
+  BTA_AG_SCO_SWB_SETTINGS_Q3 = 7,
+  BTA_AG_SCO_SWB_SETTINGS_UKNOWN = 0xFFFF,
+} tBTA_AG_SCO_SWB_SETTINGS;
+
+#endif
+
 /* type for each service control block */
-typedef struct {
+struct tBTA_AG_SCB {
   char clip[BTA_AG_AT_MAX_LEN + 1];     /* number string used for CLIP */
   uint16_t serv_handle[BTA_AG_NUM_IDX]; /* RFCOMM server handles */
   tBTA_AG_AT_CB at_cb;                  /* AT command interpreter */
@@ -329,13 +340,20 @@ typedef struct {
   tBTA_AG_SCO_MSBC_SETTINGS
       codec_msbc_settings; /* settings to be used for the impending eSCO */
 
+#if (SWB_ENABLED == TRUE)
+  tBTA_AG_SCO_SWB_SETTINGS
+      codec_swb_settings; /* settings to be used for the SWB eSCO */
+
+  bool is_swb_codec;      /* Flag to determine SWB codec  */
+#endif
+
   tBTA_AG_HF_IND
       peer_hf_indicators[BTA_AG_MAX_NUM_PEER_HF_IND]; /* Peer supported
                                                   HF indicators */
   tBTA_AG_HF_IND
       local_hf_indicators[BTA_AG_MAX_NUM_LOCAL_HF_IND]; /* Local supported
                                                     HF indicators */
-} tBTA_AG_SCB;
+};
 
 /* type for sco data */
 typedef struct {
@@ -356,9 +374,9 @@ typedef struct {
   tBTA_AG_PARSE_MODE parse_mode;           /* parse/pass-through mode */
   uint8_t max_hf_clients;                 /* max hf clients can be connected */
 #if (TWS_AG_ENABLED == TRUE)
-  tBTA_AG_SCO_CB twsp_sco;                 /* peer Sco detail*/
-  tBTA_AG_SCB* main_sm_scb;                /* SCB attached with main sco sm*/
-  tBTA_AG_SCB* sec_sm_scb;                /* SCB attached with secondary sm*/
+  tBTA_AG_SCO_CB twsp_sec_sco;      /*peer Sco detail*/
+  tBTA_AG_SCB* main_sm_scb;         /*SCB attached with main sco sm for TWS+*/
+  tBTA_AG_SCB* sec_sm_scb;          /*SCB attached with secondary sm for TWS+*/
 #endif
 } tBTA_AG_CB;
 
@@ -395,7 +413,7 @@ extern void bta_ag_sm_execute(tBTA_AG_SCB* p_scb, uint16_t event,
                               tBTA_AG_DATA* p_data);
 extern bool bta_ag_hdl_event(BT_HDR* p_msg);
 extern void bta_ag_collision_cback(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                   uint8_t app_id, const RawAddress* peer_addr);
+                                   uint8_t app_id, const RawAddress& peer_addr);
 extern void bta_ag_resume_open(tBTA_AG_SCB* p_scb);
 
 /* SDP functions */
@@ -421,6 +439,7 @@ extern void bta_ag_rfc_do_open(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data);
 extern bool bta_ag_sco_is_active_device(const RawAddress& bd_addr);
 extern bool bta_ag_sco_is_open(tBTA_AG_SCB* p_scb);
 extern bool bta_ag_sco_is_opening(tBTA_AG_SCB* p_scb);
+extern bool bta_ag_is_sco_present_on_any_device();
 extern void bta_ag_sco_conn_rsp(tBTA_AG_SCB* p_scb,
                                 tBTM_ESCO_CONN_REQ_EVT_DATA* p_data);
 extern void bta_ag_cback_sco(tBTA_AG_SCB* p_scb, uint8_t event);
@@ -475,13 +494,13 @@ extern void bta_clear_active_device();
 extern void bta_ag_api_set_active_device(tBTA_AG_DATA* p_data);
 extern void bta_ag_handle_collision(tBTA_AG_SCB* p_scb, tBTA_AG_DATA* p_data);
 
-extern void bta_ag_create_sco(tBTA_AG_SCB* p_scb, bool is_orig);
+extern bool bta_ag_create_sco(tBTA_AG_SCB* p_scb, bool is_orig);
 extern bool bta_ag_remove_sco(tBTA_AG_SCB* p_scb, bool only_active);
 extern void bta_ag_send_result(tBTA_AG_SCB* p_scb, size_t code,
                                const char* p_arg, int16_t int_arg);
 extern void bta_ag_sco_event(tBTA_AG_SCB* p_scb, uint8_t event);
-#if (BTA_AG_SCO_DEBUG == TRUE)
-extern char* bta_ag_sco_state_str(uint8_t state);
-extern char* bta_ag_sco_evt_str(uint8_t event);
-#endif
+extern const char* bta_ag_sco_evt_str(uint8_t event);
+extern const char* bta_ag_sco_state_str(uint8_t state);
+
+extern bool bta_ag_is_call_present(const RawAddress* peer_addr);
 #endif /* BTA_AG_INT_H */

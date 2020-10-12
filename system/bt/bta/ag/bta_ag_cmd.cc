@@ -74,6 +74,9 @@
 #include "bta_ag_twsp.h"
 #include "bta_ag_twsp_dev.h"
 #endif
+#if (SWB_ENABLED == TRUE)
+#include "bta_ag_swb.h"
+#endif
 
 /*****************************************************************************
  *  Constants
@@ -86,12 +89,6 @@
 
 /* Invalid Chld command */
 #define BTA_AG_INVALID_CHLD 255
-
-/* clip type constants */
-#define BTA_AG_CLIP_TYPE_MIN 128
-#define BTA_AG_CLIP_TYPE_MAX 175
-#define BTA_AG_CLIP_TYPE_DEFAULT 129
-#define BTA_AG_CLIP_TYPE_VOIP 255
 
 #define COLON_IDX_4_VGSVGM 4
 
@@ -154,11 +151,17 @@ const tBTA_AG_AT_CMD bta_ag_hfp_cmd[] = {
      BTA_AG_AT_SET | BTA_AG_AT_READ | BTA_AG_AT_TEST, BTA_AG_AT_STR, 0, 0},
     {"+BIEV", BTA_AG_AT_BIEV_EVT, BTA_AG_AT_SET, BTA_AG_AT_STR, 0, 0},
     {"+BAC", BTA_AG_AT_BAC_EVT, BTA_AG_AT_SET, BTA_AG_AT_STR, 0, 0},
+
+#if (SWB_ENABLED == TRUE)
+    {"+%QAC", BTA_AG_AT_QAC_EVT, BTA_AG_AT_SET, BTA_AG_AT_STR, 0, 0},
+    {"+%QCS", BTA_AG_AT_QCS_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, 0,
+     BTA_AG_CMD_MAX_VAL},
+#endif
 #if (TWS_AG_ENABLED == TRUE)
     {"%QMQ", BTA_AG_TWSP_AT_QMQ_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_MIC_QUALITY, TWSPLUS_MAX_MIC_QUALITY},
     {"%QES", BTA_AG_TWSP_AT_QES_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_EB_STATE_UNKNOWN, TWSPLUS_EB_STATE_INEAR},
     {"%QER", BTA_AG_TWSP_AT_QER_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_EB_ROLE_LEFT, TWSPLUS_EB_ROLE_MONO},
-    {"%QBC", BTA_AG_TWSP_AT_QBC_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_BATTERY_CHARGE, TWSPLUS_MAX_BATTERY_CHARGE},
+    {"%QBC", BTA_AG_TWSP_AT_QBC_EVT, BTA_AG_AT_SET, BTA_AG_AT_STR, 0, 0},
     {"%QMD", BTA_AG_TWSP_AT_QMD_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_MICPATH_DELAY, TWSPLUS_MAX_MICPATH_DELAY/2-1},
     {"%QDSP", BTA_AG_TWSP_AT_QDSP_EVT, BTA_AG_AT_SET, BTA_AG_AT_INT, TWSPLUS_MIN_QDSP, TWSPLUS_MAX_QDSP},
 #endif
@@ -214,6 +217,10 @@ const tBTA_AG_RESULT bta_ag_result_tbl[] = {
     {"+CME ERROR: ", BTA_AG_LOCAL_RES_CMEE, BTA_AG_RES_FMT_INT},
     {"+BCS: ", BTA_AG_LOCAL_RES_BCS, BTA_AG_RES_FMT_INT},
     {"+BIND: ", BTA_AG_BIND_RES, BTA_AG_RES_FMT_STR},
+#if (SWB_ENABLED == TRUE)
+    {"+%QAC: ", BTA_AG_LOCAL_RES_QAC, BTA_AG_RES_FMT_STR},
+    {"+%QCS: ", BTA_AG_LOCAL_RES_QCS, BTA_AG_RES_FMT_INT},
+#endif
 #if (TWS_AG_ENABLED == TRUE)
     {"%QMQ: ", BTA_AG_TWS_QMQ_RES, BTA_AG_RES_FMT_NONE},
     {"%QES: ", BTA_AG_TWS_QES_RES, BTA_AG_RES_FMT_NONE},
@@ -304,8 +311,12 @@ void bta_ag_send_result(tBTA_AG_SCB* p_scb, size_t code,
   if (result->arg_type == BTA_AG_RES_FMT_INT) {
     p += utl_itoa((uint16_t)int_arg, p);
   } else if (result->arg_type == BTA_AG_RES_FMT_STR) {
-    strcpy(p, p_arg);
-    p += strlen(p_arg);
+    if (p_arg != NULL) {
+      strcpy(p, p_arg);
+      p += strlen(p_arg);
+    }
+    else
+      APPL_TRACE_WARNING("%s: p_arg is NULL", __func__);
   }
 
   /* finish with \r\n */
@@ -900,11 +911,17 @@ static void bta_ag_bind_response(tBTA_AG_SCB* p_scb, uint8_t arg_type) {
  ******************************************************************************/
 static bool bta_ag_parse_biev_response(tBTA_AG_SCB* p_scb, tBTA_AG_VAL* val) {
   char* p_token = strtok(val->str, ",");
+  if (p_token == NULL) {
+     APPL_TRACE_WARNING("%s received invalid string %s", __func__,
+                       val->str);
+     return false;
+  }
+
   uint16_t rcv_ind_id = atoi(p_token);
 
   p_token = strtok(NULL, ",");
   if (p_token == NULL) {
-     APPL_TRACE_DEBUG("%s received invalid string %s", __func__,
+     APPL_TRACE_WARNING("%s received invalid string %s", __func__,
                        val->str);
      return false;
   }
@@ -998,9 +1015,13 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
   switch (cmd) {
     case BTA_AG_AT_A_EVT:
       alarm_cancel(p_scb->ring_timer);
+      FALLTHROUGH;
     case BTA_AG_SPK_EVT:
+      FALLTHROUGH;
     case BTA_AG_MIC_EVT:
+      FALLTHROUGH;
     case BTA_AG_AT_CHUP_EVT:
+      FALLTHROUGH;
     case BTA_AG_AT_CBC_EVT:
       /* send OK */
       bta_ag_send_ok(p_scb);
@@ -1233,27 +1254,38 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
 
       tBTA_AG_FEAT features = p_scb->features & BTA_AG_BSRF_FEAT_SPEC;
 
-      if ((p_scb->peer_version < HFP_VERSION_1_7) &&
-           (!(p_scb->peer_features & BTA_AG_PEER_FEAT_HF_IND))) {
-        /* For PTS keep flags as is */
-        if (property_get("vendor.bt.pts.certification", value, "false") &&
-            strcmp(value, "true") != 0)
-        {
-          features  = features & ~(BTA_AG_FEAT_HF_IND | BTA_AG_FEAT_ESCO);
+      /* peer is HFP 1.1 if it initiated connection before AG could get remote's
+       * HFP version */
+#if (TWS_AG_ENABLED == TRUE)
+      if(!is_twsp_device(p_scb->peer_addr)) {
+#endif
+        if (p_scb->peer_version < HFP_VERSION_1_7 &&
+              p_scb->peer_version != HFP_VERSION_1_1) {
+          /* For PTS keep flags as is */
+          if (property_get("vendor.bt.pts.certification", value, "false") &&
+              strcmp(value, "true") != 0)
+          {
+            features  = features & ~(BTA_AG_FEAT_HF_IND | BTA_AG_FEAT_ESCO);
+          }
         }
-      }
-      else if ((p_scb->peer_version == HFP_VERSION_1_7) &&
-                (!(p_scb->peer_features & BTA_AG_PEER_FEAT_HF_IND)))
-      {
-         APPL_TRACE_WARNING("%s: Remote is hfp 1.7 but does not support HF indicators" \
+        else if ((p_scb->peer_version == HFP_VERSION_1_7) &&
+                  (!(p_scb->peer_features & BTA_AG_PEER_FEAT_HF_IND)))
+        {
+           APPL_TRACE_WARNING("%s: Remote is hfp 1.7 but does not support HF indicators" \
                   "unset hf indicator bit from BRSF", __func__);
-         /* For PTS keep flags as is */
-         if (property_get("vendor.bt.pts.certification", value, "false") &&
-             strcmp(value, "true") != 0)
-         {
-           features = features & ~(BTA_AG_FEAT_HF_IND);
-         }
+           /* For PTS keep flags as is */
+           if (property_get("vendor.bt.pts.certification", value, "false") &&
+               strcmp(value, "true") != 0)
+           {
+             features = features & ~(BTA_AG_FEAT_HF_IND);
+           }
+        }
+#if (TWS_AG_ENABLED == TRUE)
+      } else {
+        APPL_TRACE_IMP("%s peer device is twsp device do not Remove" \
+            "HF indicators, eSCO S4 settings bits from BRSF", __func__);
       }
+#endif
       APPL_TRACE_DEBUG("%s BRSF HF: 0x%x, phone: 0x%x", __func__,
                        p_scb->peer_features, features);
 
@@ -1387,13 +1419,19 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
         p_scb->peer_codecs = bta_ag_parse_bac(p_scb, p_arg, p_end);
         p_scb->codec_updated = true;
 
-        if (p_scb->peer_codecs & BTA_AG_CODEC_MSBC) {
-          p_scb->sco_codec = UUID_CODEC_MSBC;
-          APPL_TRACE_DEBUG("Received AT+BAC, updating sco codec to MSBC");
-        } else {
-          p_scb->sco_codec = UUID_CODEC_CVSD;
-          APPL_TRACE_DEBUG("Received AT+BAC, updating sco codec to CVSD");
+#if (SWB_ENABLED == TRUE)
+        if (p_scb->is_swb_codec == false) {
+#endif
+          if (p_scb->peer_codecs & BTA_AG_CODEC_MSBC) {
+            p_scb->sco_codec = UUID_CODEC_MSBC;
+            APPL_TRACE_DEBUG("Received AT+BAC, updating sco codec to MSBC");
+          } else {
+            p_scb->sco_codec = UUID_CODEC_CVSD;
+            APPL_TRACE_DEBUG("Received AT+BAC, updating sco codec to CVSD");
+          }
+#if (SWB_ENABLED == TRUE)
         }
+#endif
         /* The above logic sets the stack preferred codec based on local and
         peer codec
         capabilities. This can be overridden by the application depending on its
@@ -1447,12 +1485,14 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
     }
     case BTA_AG_LOCAL_EVT_BCC: {
         if (
-#if (TWS_AG_ENABLED == TRUE)
-            /*Allow Incoming SCO requests from non-active devices if it is TWS+
-              device*/
-            !is_twsp_device(p_scb->peer_addr) &&
-#endif
-        !bta_ag_sco_is_active_device(p_scb->peer_addr)) {
+          !bta_ag_is_call_present(&p_scb->peer_addr)) {
+          LOG(WARNING) << __func__ << ": AT+BCC rejected as " << p_scb->peer_addr
+                       << " does not have call, call setup";
+          bta_ag_send_error(p_scb, BTA_AG_ERR_OP_NOT_ALLOWED);
+          break;
+        }
+        if (
+          !bta_ag_sco_is_active_device(p_scb->peer_addr)) {
           LOG(WARNING) << __func__ << ": AT+BCC rejected as " << p_scb->peer_addr
                        << " is not the active device";
           bta_ag_send_error(p_scb, BTA_AG_ERR_OP_NOT_ALLOWED);
@@ -1466,6 +1506,17 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
       bta_ag_sco_open(p_scb, NULL);
       }
       break;
+#if (SWB_ENABLED == TRUE)
+    case BTA_AG_AT_QAC_EVT:
+        p_scb->peer_codecs |= bta_ag_parse_qac(p_scb, p_arg);
+        bta_ag_swb_handle_vs_at_events(p_scb, cmd, int_arg, val);
+        bta_ag_send_ok(p_scb);
+      break;
+    case BTA_AG_AT_QCS_EVT:
+        bta_ag_send_ok(p_scb);
+        bta_ag_swb_handle_vs_at_events(p_scb, cmd, int_arg, val);
+      break;
+#endif
 #if (TWS_AG_ENABLED == TRUE)
     case BTA_AG_TWSP_AT_QMQ_EVT:
     case BTA_AG_TWSP_AT_QES_EVT:
@@ -1475,7 +1526,7 @@ void bta_ag_at_hfp_cback(tBTA_AG_SCB* p_scb, uint16_t cmd, uint8_t arg_type,
     case BTA_AG_TWSP_AT_QDSP_EVT:
         if (is_twsp_device(p_scb->peer_addr)) {
            bta_ag_send_ok(p_scb);
-           twsp_handle_vs_at_events(p_scb, cmd, int_arg);
+           twsp_handle_vs_at_events(p_scb, cmd, &val, int_arg);
         } else {
            APPL_TRACE_DEBUG("Not supported for non-twsp devices");
            bta_ag_send_error(p_scb, BTA_AG_ERR_OP_NOT_SUPPORTED);
@@ -1654,22 +1705,10 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, tBTA_AG_API_RESULT* p_result) {
       /* tell sys to stop av if any */
       bta_sys_sco_use(BTA_ID_AG, p_scb->app_id, p_scb->peer_addr);
 
-      /* store caller id string.
-       * append type info at the end.
-       * make sure a valid type info is passed.
-       * otherwise add 129 as default type */
-      if ((p_result->data.num < BTA_AG_CLIP_TYPE_MIN) ||
-          (p_result->data.num > BTA_AG_CLIP_TYPE_MAX)) {
-        if (p_result->data.num != BTA_AG_CLIP_TYPE_VOIP)
-          p_result->data.num = BTA_AG_CLIP_TYPE_DEFAULT;
-      }
-
-      APPL_TRACE_DEBUG("CLIP type :%d", p_result->data.num);
       p_scb->clip[0] = 0;
-      if (p_result->data.str[0] != 0)
-        snprintf(p_scb->clip, sizeof(p_scb->clip), "%s,%d", p_result->data.str,
-                 p_result->data.num);
-
+      if (p_result->data.str[0] != 0) {
+        snprintf(p_scb->clip, sizeof(p_scb->clip), "%s", p_result->data.str);
+      }
       /* send callsetup indicator */
       if (p_scb->post_sco == BTA_AG_POST_SCO_CALL_END) {
         /* Need to sent 2 callsetup IND's(Call End and Incoming call) after SCO
@@ -1705,8 +1744,8 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, tBTA_AG_API_RESULT* p_result) {
          /* Ensure that call active indicator is sent prior to SCO connection
             request by adding some delay. Some remotes are very strict in the
             order of call indicator and SCO connection request. */
-         APPL_TRACE_IMP("%s: sleeping 20msec before opening sco", __func__);
-         usleep(20*1000);
+         APPL_TRACE_IMP("%s: sleeping 200msec before opening sco", __func__);
+         usleep(200*1000);
       }
 
       if (!(p_scb->features & BTA_AG_FEAT_NOSCO)) {
@@ -1787,6 +1826,17 @@ void bta_ag_hfp_result(tBTA_AG_SCB* p_scb, tBTA_AG_API_RESULT* p_result) {
         p_scb->post_sco = BTA_AG_POST_SCO_CALL_END;
         APPL_TRACE_DEBUG("%s:calling sco_close : %d",__func__, p_result->result);
         bta_ag_sco_close(p_scb, (tBTA_AG_DATA*)p_result);
+      } else if (
+#if (TWS_AG_ENABLED == TRUE)
+                 !is_twsp_device(p_scb->peer_addr) &&
+#endif
+                  bta_ag_is_sco_present_on_any_device()) {
+        /* send call inds after SCO close to all legacy devices */
+        APPL_TRACE_IMP("%s: SCO is present, send call end indicators for all scbs" \
+                            " after SCO close, device %s", __func__,
+                             p_scb->peer_addr.ToString().c_str());
+        p_scb->post_sco = BTA_AG_POST_SCO_CALL_END;
+
       } else if (p_scb->post_sco == BTA_AG_POST_SCO_CALL_END_INCALL) {
         /* sco closing for outgoing call because of incoming call */
         /* Send only callsetup end indicator after sco close */
@@ -2061,4 +2111,37 @@ void bta_ag_send_ring(tBTA_AG_SCB* p_scb, UNUSED_ATTR tBTA_AG_DATA* p_data) {
 #if (TWS_AG_ENABLED == TRUE)
   }
 #endif
+}
+
+bool bta_ag_is_call_present(const RawAddress* peer_addr)
+{
+  uint16_t handle;
+  tBTA_AG_SCB* p_scb;
+
+  if (peer_addr == NULL)
+  {
+    APPL_TRACE_WARNING("%s, peer address is null", __func__);
+    return 0;
+  }
+
+  handle = bta_ag_idx_by_bdaddr(peer_addr);
+  p_scb = bta_ag_scb_by_idx(handle);
+
+  if (p_scb == NULL)
+  {
+    APPL_TRACE_WARNING("%s, p_scb is null for peer dev %s", __func__,
+                        (*peer_addr).ToString().c_str());
+    return 0;
+  }
+
+  if (p_scb->call_ind || p_scb->callsetup_ind || p_scb->callheld_ind)
+  {
+    APPL_TRACE_IMP("%s, call is present for peer dev %s", __func__,
+                    p_scb->peer_addr.ToString().c_str());
+    return 1;
+  }
+
+  APPL_TRACE_IMP("%s, call is not present for peer dev %s", __func__,
+                    p_scb->peer_addr.ToString().c_str());
+  return 0;
 }

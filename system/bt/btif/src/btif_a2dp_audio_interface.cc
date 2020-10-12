@@ -78,6 +78,7 @@
 #include <a2dp_vendor.h>
 #include "bta/av/bta_av_int.h"
 #include "btif_bat.h"
+#include "controller.h"
 
 using com::qualcomm::qti::bluetooth_audio::V1_0::IBluetoothAudio;
 using com::qualcomm::qti::bluetooth_audio::V1_0::IBluetoothAudioCallbacks;
@@ -113,18 +114,16 @@ std::mutex mtx;
 std::mutex mtxBtAudio;
 std::condition_variable mCV;
 /*BTIF AV helper */
-extern bool btif_av_is_device_disconnecting();
 extern int btif_get_is_remote_started_idx();
 extern bool btif_av_is_playing_on_other_idx(int current_index);
 extern bool btif_av_is_local_started_on_other_idx(int current_index);
 extern bool btif_av_is_remote_started_set(int index);
 extern int btif_get_is_remote_started_idx();
-#if (TWS_ENABLED == TRUE)
 extern bool btif_av_current_device_is_tws();
 extern bool btif_av_is_tws_device_playing(int index);
 extern bool btif_av_is_idx_tws_device(int index);
 extern int btif_av_get_tws_pair_idx(int index);
-#endif
+extern bool btif_av_is_tws_suspend_triggered(int index);
 extern bool reconfig_a2dp;
 extern bool audio_start_awaited;
 extern bool tws_defaultmono_supported;
@@ -137,8 +136,6 @@ static void btif_a2dp_audio_send_codec_config();
 static void btif_a2dp_audio_send_mcast_status();
 static void btif_a2dp_audio_send_num_connected_devices();
 static void btif_a2dp_audio_send_connection_status();
-static void btif_a2dp_audio_send_sink_latency();
-void btif_a2dp_update_sink_latency_change();
 extern int btif_max_av_clients;
 extern bool enc_update_in_progress;
 extern tBTA_AV_HNDL btif_av_get_av_hdl_from_idx(int idx);
@@ -290,9 +287,9 @@ static void* server_thread(UNUSED_ATTR void* arg) {
   return NULL;
 }
 
-uint8_t btif_a2dp_audio_interface_get_pending_cmd() {
+tA2DP_CTRL_CMD btif_a2dp_audio_interface_get_pending_cmd() {
     LOG_INFO(LOG_TAG," pending_cmd = %d", a2dp_cmd_pending);
-    return a2dp_cmd_pending;
+    return (tA2DP_CTRL_CMD)a2dp_cmd_pending;
 }
 
 void btif_a2dp_audio_interface_init() {
@@ -705,10 +702,6 @@ void btif_a2dp_audio_send_sink_latency()
   }
 }
 
-void btif_a2dp_update_sink_latency_change() {
-  btif_a2dp_audio_send_sink_latency();
-}
-
 void on_hidl_server_died() {
   LOG_INFO(LOG_TAG,"on_hidl_server_died");
   Lock lock(mtxBtAudio);
@@ -820,6 +813,7 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
 
         codec_type = A2DP_GetCodecType((const uint8_t*)p_codec_info);
         LOG_INFO(LOG_TAG,"codec_type = %x",codec_type);
+        peer_param.peer_mtu = peer_param.peer_mtu - A2DP_HEADER_SIZE;
         if (A2DP_MEDIA_CT_SBC == codec_type)
         {
           bitrate = A2DP_GetOffloadBitrateSbc(CodecConfig, peer_param.is_peer_edr);
@@ -840,21 +834,30 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
         }
         else if (A2DP_MEDIA_CT_AAC == codec_type)
         {
-          bitrate = 0;//Bitrate is present in codec info
+          bool is_AAC_frame_ctrl_stack_enable =
+              controller_get_interface()->supports_aac_frame_ctl();
+          LOG_INFO(LOG_TAG, "Stack AAC frame control enabled: %d", is_AAC_frame_ctrl_stack_enable);
+          if (is_AAC_frame_ctrl_stack_enable) {
+            int sample_rate = A2DP_GetTrackSampleRate(p_codec_info);
+            LOG_INFO(LOG_TAG,"sample_rate = %d", sample_rate);
+            bitrate = (peer_param.peer_mtu - AAC_LATM_HEADER) * (8 * sample_rate / AAC_SAMPLE_SIZE);
+          } else {
+            bitrate = 0;//Bitrate is present in codec info
+          }
         }
+
         bits_per_sample = CodecConfig->getAudioBitsPerSample();
-        LOG_INFO(LOG_TAG,"bitrate = %d, bits_per_sample = %d", bitrate, bits_per_sample);
+        LOG_INFO(LOG_TAG,"bitrate = %d, bits_per_sample = %d, peer_param.peer_mtu = %d",
+                          bitrate, bits_per_sample, peer_param.peer_mtu);
         codec_info[0] = 0; //playing device handle
         len = p_codec_info[0] + 2;
-        codec_info[len++] = (uint8_t)(peer_param.peer_mtu & 0x00FF);
-        codec_info[len++] = (uint8_t)(((peer_param.peer_mtu & 0xFF00) >> 8) & 0x00FF);
-        codec_info[len++] = (uint8_t)(bitrate & 0x00FF);
-        codec_info[len++] = (uint8_t)(((bitrate & 0xFF00) >> 8) & 0x00FF);
-        codec_info[len++] = (uint8_t)(((bitrate & 0xFF0000) >> 16) & 0x00FF);
-        codec_info[len++] = (uint8_t)(((bitrate & 0xFF000000) >> 24) & 0x00FF);
-        *(uint32_t *)&codec_info[len] = (uint32_t)bits_per_sample;
+        *(uint16_t *)&codec_info[len] = (uint16_t)peer_param.peer_mtu;
+        len = len + 2;
+        *(uint32_t *)&codec_info[len] = (uint32_t)bitrate;
         len = len + 4;
+        *(uint32_t *)&codec_info[len] = (uint32_t)bits_per_sample;
         LOG_INFO(LOG_TAG,"len  = %d", len);
+        len = len + 4;
         status = A2DP_CTRL_ACK_SUCCESS;
         a2dp_local_cmd_pending = A2DP_CTRL_CMD_NONE;
         break;
@@ -880,6 +883,9 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
         break;
 
       default:
+        APPL_TRACE_IMP("%s: a2dp_cmd_pending=%s, a2dp_cmd_queued=%s",
+            __func__, audio_a2dp_hw_dump_ctrl_event((tA2DP_CTRL_CMD)a2dp_cmd_pending),
+            audio_a2dp_hw_dump_ctrl_event((tA2DP_CTRL_CMD)a2dp_cmd_queued));
         if (a2dp_cmd_pending != A2DP_CTRL_CMD_NONE)
         {
           status = A2DP_CTRL_ACK_PREVIOUS_COMMAND_PENDING;
@@ -897,6 +903,12 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
         {
           a2dp_cmd_pending = cmd;
           status = btif_a2dp_audio_snd_ctrl_cmd(cmd);
+          if (a2dp_cmd_queued != A2DP_CTRL_CMD_NONE &&
+              (status == A2DP_CTRL_ACK_SUCCESS || status == A2DP_CTRL_ACK_PENDING)) {
+            APPL_TRACE_IMP("a2dp_cmd_queued is %s, set it to NONE",
+                audio_a2dp_hw_dump_ctrl_event((tA2DP_CTRL_CMD)a2dp_cmd_queued));
+            a2dp_cmd_queued = A2DP_CTRL_CMD_NONE;
+          }
         }
     }
   } else {
@@ -1061,15 +1073,19 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
                 btif_dispatch_sm_event(BTIF_AV_START_STREAM_REQ_EVT, NULL, 0);
               }
               status = A2DP_CTRL_ACK_PENDING;
+            } else if (remote_start_idx < btif_max_av_clients &&
+              reset_remote_start && btif_av_current_device_is_tws()) {
+              uint8_t hdl = 0;
+              int pair_idx = remote_start_idx;
+              if (remote_start_flag) {
+                //Both the earbuds are remote started, fetch index pair to send offload req
+                pair_idx = btif_av_get_tws_pair_idx(latest_playing_idx);
+              }
+              hdl = btif_av_get_av_hdl_from_idx(pair_idx);
+              APPL_TRACE_DEBUG("Start VSC exchange for remote started index of TWS+ device");
+              btif_dispatch_sm_event(BTIF_AV_OFFLOAD_START_REQ_EVT, (char *)&hdl, 1);
+              status = A2DP_CTRL_ACK_PENDING;
             }
-            break;
-          } else if (remote_start_idx < btif_max_av_clients &&
-            reset_remote_start && btif_av_current_device_is_tws()) {
-            uint8_t hdl = 0;
-            hdl = btif_av_get_av_hdl_from_idx(remote_start_idx);
-            APPL_TRACE_DEBUG("Start VSC exchange for remote started index of TWS+ device");
-            btif_dispatch_sm_event(BTIF_AV_OFFLOAD_START_REQ_EVT, (char *)&hdl, 1);
-            status = A2DP_CTRL_ACK_PENDING;
 #endif
             break;
           }
@@ -1153,12 +1169,11 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
           btif_dispatch_sm_event(BTIF_AV_SUSPEND_STREAM_REQ_EVT, NULL, 0);
           status = A2DP_CTRL_ACK_PENDING;
           break;
-        }
-#if (TWS_ENABLED == TRUE)
-        else if (btif_av_current_device_is_tws()) {
+        }else if (btif_av_current_device_is_tws()) {
           //Check if either of the index is streaming
           for (int i = 0; i < btif_max_av_clients; i++) {
-            if (btif_av_is_tws_device_playing(i)) {
+            if (btif_av_is_tws_device_playing(i) &&
+              !btif_av_is_tws_suspend_triggered(i)) {
               APPL_TRACE_DEBUG("Suspend TWS+ stream on index %d",i);
               btif_dispatch_sm_event(BTIF_AV_SUSPEND_STREAM_REQ_EVT, NULL, 0);
               status = A2DP_CTRL_ACK_PENDING;
@@ -1170,7 +1185,6 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
             break;
           }
         }
-#endif
         /*pls check if we need to add a condition here */
         /* If we are not in started state, just ack back ok and let
          * audioflinger close the channel. This can happen if we are
@@ -1246,6 +1260,7 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
 
         codec_type = A2DP_GetCodecType((const uint8_t*)p_codec_info);
         LOG_INFO(LOG_TAG,"codec_type = %x",codec_type);
+        peer_param.peer_mtu = peer_param.peer_mtu - A2DP_HEADER_SIZE;
         if (A2DP_MEDIA_CT_SBC == codec_type)
         {
           bitrate = A2DP_GetOffloadBitrateSbc(CodecConfig, peer_param.is_peer_edr);
@@ -1271,11 +1286,9 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
         }
         else if (A2DP_MEDIA_CT_AAC == codec_type)
         {
-          bool is_AAC_frame_ctrl_stack_enable = false;
-          char AAC_frame_ctrl_stack_val[PROPERTY_VALUE_MAX] = {'\0'};
-          osi_property_get("persist.vendor.btstack.aac_frm_ctl.enabled", AAC_frame_ctrl_stack_val, "false");
-          if (!strcmp(AAC_frame_ctrl_stack_val, "true"))
-            is_AAC_frame_ctrl_stack_enable = true;
+          bool is_AAC_frame_ctrl_stack_enable =
+              controller_get_interface()->supports_aac_frame_ctl();
+
           LOG_INFO(LOG_TAG, "Stack AAC frame control enabled: %d", is_AAC_frame_ctrl_stack_enable);
           if (is_AAC_frame_ctrl_stack_enable) {
             int sample_rate = A2DP_GetTrackSampleRate(p_codec_info);
@@ -1285,10 +1298,8 @@ uint8_t btif_a2dp_audio_process_request(uint8_t cmd)
             bitrate = 0;//Bitrate is present in codec info
           }
         }
+
         bits_per_sample = CodecConfig->getAudioBitsPerSample();
-
-        peer_param.peer_mtu = peer_param.peer_mtu - A2DP_HEADER_SIZE;
-
         LOG_INFO(LOG_TAG,"bitrate = %d, bits_per_sample = %d, peer_param.peer_mtu = %d",
                           bitrate, bits_per_sample, peer_param.peer_mtu);
         codec_info[0] = 0; //playing device handle
@@ -1395,6 +1406,7 @@ uint8_t btif_a2dp_audio_snd_ctrl_cmd(uint8_t cmd)
 
       int remote_start_idx = btif_get_is_remote_started_idx();
       int latest_playing_idx = btif_av_get_latest_device_idx_to_start();
+      bool remote_start_flag = btif_av_is_remote_started_set(latest_playing_idx);
       if (btif_a2dp_source_is_remote_start()) {
         APPL_TRACE_DEBUG("%s: remote started idx = %d, latest playing  idx = %d",__func__,
                          remote_start_idx, latest_playing_idx);
@@ -1436,14 +1448,12 @@ uint8_t btif_a2dp_audio_snd_ctrl_cmd(uint8_t cmd)
           break;
         } else if (btif_a2dp_src_vsc.tx_started == FALSE) {
           uint8_t hdl = 0;
-          bool remote_start_flag = false;
           APPL_TRACE_DEBUG("%s: remote started idx = %d",__func__, latest_playing_idx);
           if (latest_playing_idx > btif_max_av_clients || latest_playing_idx < 0) {
             APPL_TRACE_ERROR("%s: Invalid index",__func__);
             status = -1;//Invalid status to stop start retry
             break;
           }
-          remote_start_flag = btif_av_is_remote_started_set(latest_playing_idx);
           if(remote_start_flag) {
             hdl = btif_av_get_av_hdl_from_idx(latest_playing_idx);
             APPL_TRACE_DEBUG("%s: hdl = %d, enc_update_in_progress = %d",__func__, hdl,

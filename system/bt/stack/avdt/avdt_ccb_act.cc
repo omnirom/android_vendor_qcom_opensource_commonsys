@@ -42,7 +42,10 @@
 #include "a2dp_constants.h"
 #include "device/include/interop.h"
 #include "btif/include/btif_storage.h"
-
+#include "controller.h"
+#include <btcommon_interface_defs.h>
+#include "bta/include/bta_av_api.h"
+#include "btif/include/btif_config.h"
 int avdt_ccb_get_num_allocated_seps();
 /*******************************************************************************
  *
@@ -158,6 +161,77 @@ int avdt_ccb_get_num_allocated_seps() {
   AVDT_TRACE_WARNING("%s:num seps allocated = %d",__func__,num_seps);
   return num_seps;
 }
+
+bool avdt_ccb_check_peer_eligible_for_aac_codec(tAVDT_CCB* p_ccb) {
+  char remote_name[BTM_MAX_REM_BD_NAME_LEN] = "";
+  uint16_t vendor = 0;
+  uint16_t product = 0;
+  uint16_t version = 0;
+  bool vndr_prdt_ver_present = false;
+  bool aac_support = false;
+  if (btif_config_get_uint16(p_ccb->peer_addr.ToString().c_str(), PNP_VENDOR_ID_CONFIG_KEY,
+      (uint16_t*)&vendor) && btif_config_get_uint16(p_ccb->peer_addr.ToString().c_str(),
+      PNP_PRODUCT_ID_CONFIG_KEY, (uint16_t*)&product) &&
+      btif_config_get_uint16(p_ccb->peer_addr.ToString().c_str(),
+      PNP_PRODUCT_VERSION_CONFIG_KEY, (uint16_t*)&version)) {
+    APPL_TRACE_DEBUG("%s: vendor: 0x%04x product: 0x%04x version: 0x%04x", __func__,
+                          vendor, product, version);
+    vndr_prdt_ver_present = true;
+  }
+  if (vndr_prdt_ver_present && (vendor == A2DP_AAC_BOSE_VENDOR_ID)) {
+    APPL_TRACE_DEBUG("%s: vendor id info matches ", __func__);
+    vndr_prdt_ver_present = false;
+    aac_support = true;
+  } else if (vndr_prdt_ver_present &&
+      interop_match_vendor_product_ids(INTEROP_ENABLE_AAC_CODEC, vendor, product) &&
+      interop_database_match_version(INTEROP_ENABLE_AAC_CODEC, version)) {
+    APPL_TRACE_DEBUG("%s: vendor, product, version id is present in conf file", __func__);
+    vndr_prdt_ver_present = false;
+    aac_support = true;
+  } else {
+    if (bta_av_co_audio_is_aac_wl_enabled(&p_ccb->peer_addr)) {
+      if (bta_av_co_audio_device_addr_check_is_enabled(&p_ccb->peer_addr)) {
+        if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
+            interop_match_addr(INTEROP_ENABLE_AAC_CODEC, &p_ccb->peer_addr) &&
+            interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
+          AVDT_TRACE_EVENT("%s: Remote device matched for AAC WL, Show AAC SEP\n", __func__);
+          aac_support = true;
+        } else {
+          AVDT_TRACE_EVENT("%s:RD not matched for name/address based WL check, skip AAC advertise\n",
+                               __func__);
+        }
+      } else {
+        if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
+            interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
+          AVDT_TRACE_EVENT("%s: Remote device matched for AAC WL, Show AAC SEP\n", __func__);
+          aac_support = true;
+        } else {
+          AVDT_TRACE_EVENT("%s: RD not matched for Name based WL check, skip AAC advertise\n",
+                                __func__);
+        }
+      }
+    } else {
+      if (bta_av_co_audio_device_addr_check_is_enabled(&p_ccb->peer_addr)) {
+        if (interop_match_addr_or_name(INTEROP_DISABLE_AAC_CODEC, &p_ccb->peer_addr)) {
+          AVDT_TRACE_EVENT("%s: device is blacklisted, skipping AAC advertise\n", __func__);
+        } else {
+          AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
+          aac_support = true;
+        }
+      } else {
+        if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
+            interop_match_name(INTEROP_DISABLE_AAC_CODEC, remote_name)) {
+          AVDT_TRACE_EVENT("%s: device is blacklisted, skipping AAC advertise\n", __func__);
+        } else {
+          AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
+          aac_support = true;
+        }
+      }
+    }
+  }
+  return aac_support;
+}
+
 /*******************************************************************************
  *
  * Function         avdt_ccb_hdl_discover_cmd
@@ -179,18 +253,24 @@ void avdt_ccb_hdl_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   //int num_codecs = AVDT_NUM_SEPS / num_conn;
   int num_codecs = ((avdt_ccb_get_num_allocated_seps()) / num_conn);
   int effective_num_seps = 0;
-  char value[PROPERTY_VALUE_MAX] = {'\0'};
   const char *codec_name;
-  property_get("vendor.bluetooth.soc", value, NULL);
+  bt_soc_type_t soc_type = controller_get_interface()->get_soc_type();
+  bool sbc_support = false;
+  bool aac_support = false;
+  bool aptx_support = false;
+  bool aptx_hd_support = false;
+  bool aptx_adaptive_support = false;
+  bool ldac_support = false;
+  bool aptx_tws_support = false;
+  bool codecs_cached = false;
+
+  AVDT_TRACE_WARNING("%s: soc_type: %d", __func__, soc_type);
+
   p_data->msg.discover_rsp.p_sep_info = sep_info;
   p_data->msg.discover_rsp.num_seps = 0;
-  char remote_name[BTM_MAX_REM_BD_NAME_LEN] = "";
 
-  char a2dp_role[PROPERTY_VALUE_MAX] = "false";
-  property_get("persist.vendor.service.bt.a2dp.sink", a2dp_role, "false");
-
-  AVDT_TRACE_WARNING("%s: total connections: %d, total codecs: %d, a2dp_role %s",
-      __func__, num_conn, num_codecs,a2dp_role);
+  AVDT_TRACE_WARNING("%s: total connections: %d, total codecs: %d",
+      __func__, num_conn, num_codecs);
 
     /* If this ccb, has done setconf and is doing discover again
      * we should show SEP for which setconfig was done earlier
@@ -210,127 +290,120 @@ void avdt_ccb_hdl_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
     }
   }
   //p_scb = &avdt_cb.scb[0];
-  p_scb = avdt_scb_by_peer_addr(p_ccb->peer_addr);
+  if (p_ccb != NULL) {
+    p_scb = avdt_scb_by_peer_addr(p_ccb->peer_addr);
+  } else {
+    APPL_TRACE_DEBUG("p_ccb is NULL");
+  }
   if (p_scb == NULL)
-    p_scb = &avdt_cb.scb[0]; 
+    p_scb = &avdt_cb.scb[0];
   i = (avdt_scb_to_hdl(p_scb) - 1);
-  /* for all allocated scbs */
-  //for (i = 0; i < AVDT_NUM_SEPS; i++, p_scb++) {
+
+  if (p_ccb != NULL) {
+    std::string bdaddr_str = p_ccb->peer_addr.ToString();
+    const char* bd_addrstr  = bdaddr_str.c_str();
+    char value[PROPERTY_VALUE_MAX];
+    int size = sizeof(value);
+    if (btif_config_get_str(bd_addrstr, BTIF_STORAGE_KEY_FOR_SUPPORTED_CODECS, value, &size)) {
+      APPL_TRACE_DEBUG("cached remote supported codec -> %s", value);
+      codecs_cached = true;
+      char *tok = NULL;
+      char *tmp_token = NULL;
+      tok = strtok_r((char*)value, ",", &tmp_token);
+      while (tok != NULL)
+      {
+       if (strcmp(tok,"SBC") == 0) {
+         sbc_support = true;
+       } else if (strcmp(tok,"AAC") == 0) {
+         aac_support = true;
+       } else if (strcmp(tok,"aptX") == 0) {
+         aptx_support = true;
+       } else if (strcmp(tok,"aptX-HD") == 0) {
+         aptx_hd_support = true;
+       } else if (strcmp(tok,"aptX-adaptive") == 0) {
+         aptx_adaptive_support = true;
+       } else if (strcmp(tok,"LDAC") == 0) {
+         ldac_support = true;
+       } else if (strcmp(tok,"aptX-TWS") == 0) {
+         aptx_tws_support = true;
+       }
+       tok = strtok_r(NULL, ",", &tmp_token);
+      }
+    } else {
+      APPL_TRACE_DEBUG("Remote supported codecs are not cached");
+    }
+  }
   for (; i < AVDT_NUM_SEPS; i++, p_scb++) {
     if (effective_num_seps == num_codecs)
       break;
-    if ((p_scb->allocated) && (!p_scb->in_use)) {
+    if ((p_ccb != NULL) && (p_scb->allocated) && (!p_scb->in_use)) {
       effective_num_seps++;
       codec_name = A2DP_CodecName(p_scb->cs.cfg.codec_info);
       APPL_TRACE_DEBUG("codec name %s", A2DP_CodecName(p_scb->cs.cfg.codec_info));
-      if (strcmp(value, "cherokee") == 0 || strcmp(value, "hastings") == 0) {
+      if ((soc_type != BT_SOC_TYPE_SMD && soc_type != BT_SOC_TYPE_ROME)) {
         if (p_scb->cs.cfg.codec_info[AVDT_CODEC_TYPE_INDEX] == A2DP_MEDIA_CT_AAC) {
-          if (bta_av_co_audio_is_aac_wl_enabled(&p_ccb->peer_addr)) {
-            if (bta_av_co_audio_device_addr_check_is_enabled(&p_ccb->peer_addr)) {
-              if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
-                  interop_match_addr(INTEROP_ENABLE_AAC_CODEC, &p_ccb->peer_addr) &&
-                  interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
-                AVDT_TRACE_EVENT("%s: Remote device matched for AAC WL, Show AAC SEP\n", __func__);
-              } else {
-                AVDT_TRACE_EVENT("%s: RD not matched for Name and address based WL check, skip AAC advertise\n",
-                                     __func__);
-                continue;
-              }
-            } else {
-              if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
-                  interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
-                AVDT_TRACE_EVENT("%s: Remote device matched for AAC WL, Show AAC SEP\n", __func__);
-              } else {
-                 AVDT_TRACE_EVENT("%s: RD not matched for Name based WL check, skip AAC advertise\n",
-                                       __func__);
-                 continue;
-              }
-            }
+          if (A2DP_Get_AAC_VBR_Status()) {
+            APPL_TRACE_DEBUG("%s: AAC VBR is enabled, show AAC SEP for this peer device", __func__);
+          } else if (avdt_ccb_check_peer_eligible_for_aac_codec(p_ccb)) {
+            APPL_TRACE_DEBUG("%s: Show AAC SEP for this peer device", __func__);
           } else {
-            if (bta_av_co_audio_device_addr_check_is_enabled(&p_ccb->peer_addr)) {
-              if (interop_match_addr_or_name(INTEROP_DISABLE_AAC_CODEC, &p_ccb->peer_addr)) {
-                AVDT_TRACE_EVENT("%s: device is blacklisted, skipping AAC advertise\n", __func__);
-                continue;
-              } else {
-                AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
-              }
-            } else {
-              if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
-                  interop_match_name(INTEROP_DISABLE_AAC_CODEC, remote_name)) {
-                AVDT_TRACE_EVENT("%s: device is blacklisted, skipping AAC advertise\n", __func__);
-                continue;
-              } else {
-                AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
-              }
-            if (strcmp(a2dp_role, "false") == 0) {
-              AVDT_TRACE_EVENT("%s: RD not matched for Name and address based WL check or WL disabled, skip AAC advertise\n",
-                      __func__);
-              continue;
-	    }
-            }
+            APPL_TRACE_DEBUG("%s: Do not show AAC SEP for this peer device", __func__);
+            continue;
           }
         }
       } else {
-        APPL_TRACE_DEBUG("BT soc is %s\n", value);
         if ((strcmp(codec_name,"aptX-HD") == 0) || (strcmp(codec_name,"LDAC") == 0)) {
-          APPL_TRACE_DEBUG("These codecs are not supported for this SOC type");
+          APPL_TRACE_DEBUG("HD codecs are not supported for this SOC type");
           continue;
         } else {
           if (p_scb->cs.cfg.codec_info[AVDT_CODEC_TYPE_INDEX] == A2DP_MEDIA_CT_AAC) {
-            if (bta_av_co_audio_is_aac_wl_enabled(&p_ccb->peer_addr)) {
-              if (bta_av_co_audio_device_addr_check_is_enabled(&p_ccb->peer_addr)) {
-                if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
-                    interop_match_addr(INTEROP_ENABLE_AAC_CODEC, &p_ccb->peer_addr) &&
-                    interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
-                  AVDT_TRACE_EVENT("%s: Remote device matched for AAC WL, Show AAC SEP\n", __func__);
-                } else {
-                  AVDT_TRACE_EVENT("%s: RD not matched for Name and address based WL check, skip AAC advertise\n",
-                                       __func__);
-                  continue;
-                }
-              } else {
-                if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
-                    interop_match_name(INTEROP_ENABLE_AAC_CODEC, remote_name)) {
-                  AVDT_TRACE_EVENT("%s: Remote device matched for AAC WL, Show AAC SEP\n", __func__);
-                } else {
-                  AVDT_TRACE_EVENT("%s: RD not matched for Name based WL check, skip AAC advertise\n",
-                                       __func__);
-                  continue;
-                }
-              }
+            if (A2DP_Get_AAC_VBR_Status()) {
+              APPL_TRACE_DEBUG("%s: AAC VBR is enabled, show AAC SEP for this peer device", __func__);
+            } else if (avdt_ccb_check_peer_eligible_for_aac_codec(p_ccb)) {
+              APPL_TRACE_DEBUG("%s: Show AAC SEP for this peer device", __func__);
             } else {
-              if (bta_av_co_audio_device_addr_check_is_enabled(&p_ccb->peer_addr)) {
-                if (interop_match_addr_or_name(INTEROP_DISABLE_AAC_CODEC, &p_ccb->peer_addr)) {
-                  AVDT_TRACE_EVENT("%s: device is blacklisted, skipping AAC advertise\n", __func__);
-                  continue;
-                } else {
-                  AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
-                }
-              } else {
-                if (btif_storage_get_stored_remote_name(p_ccb->peer_addr, remote_name) &&
-                    interop_match_name(INTEROP_DISABLE_AAC_CODEC, remote_name)) {
-                  AVDT_TRACE_EVENT("%s: device is blacklisted, skipping AAC advertise\n", __func__);
-                  continue;
-                } else {
-                  AVDT_TRACE_EVENT("%s: Remote device is not present in AAC BL, Show AAC SEP\n", __func__);
-                }
-              }
+              APPL_TRACE_DEBUG("%s: Do not show AAC SEP for this peer device", __func__);
+              continue;
             }
           }
         }
       }
-       /* copy sep info */
-       sep_info[p_data->msg.discover_rsp.num_seps].in_use = p_scb->in_use;
-       sep_info[p_data->msg.discover_rsp.num_seps].seid = i + 1;
-       sep_info[p_data->msg.discover_rsp.num_seps].media_type = p_scb->cs.media_type;
-       sep_info[p_data->msg.discover_rsp.num_seps].tsep = p_scb->cs.tsep;
-
-       p_data->msg.discover_rsp.num_seps++;
+      if (codecs_cached) {
+        if ((strcmp(codec_name,"SBC") == 0) && sbc_support) {
+          APPL_TRACE_DEBUG("show support of SBC ");
+        } else if ((strcmp(codec_name,"AAC") == 0) && aac_support) {
+          APPL_TRACE_DEBUG("show support of AAC");
+        } else if ((strcmp(codec_name,"aptX") == 0) && aptx_support) {
+          APPL_TRACE_DEBUG("show support of aptX");
+        } else if ((strcmp(codec_name,"aptX-HD") == 0) && aptx_hd_support) {
+          APPL_TRACE_DEBUG("show support of aptX-HD");
+        } else if ((strcmp(codec_name,"aptX-adaptive") == 0) && aptx_adaptive_support) {
+          APPL_TRACE_DEBUG("show support of aptx-adaptive");
+        } else if ((strcmp(codec_name,"LDAC") == 0) && ldac_support) {
+          APPL_TRACE_DEBUG("show support of LDAC");
+        } else if ((strcmp(codec_name,"aptX-TWS") == 0) && aptx_tws_support) {
+          APPL_TRACE_DEBUG("show support of aptx-tws");
+        } else {
+          continue;
+        }
+      }
+      /* copy sep info */
+      sep_info[p_data->msg.discover_rsp.num_seps].in_use = p_scb->in_use;
+      sep_info[p_data->msg.discover_rsp.num_seps].seid = i + 1;
+      sep_info[p_data->msg.discover_rsp.num_seps].media_type = p_scb->cs.media_type;
+      sep_info[p_data->msg.discover_rsp.num_seps].tsep = p_scb->cs.tsep;
+      p_data->msg.discover_rsp.num_seps++;
     }
   }
+  codecs_cached = false;
   AVDT_TRACE_WARNING("%s: effective number of endpoints: %d", __func__, effective_num_seps);
-  /* send response */
-  avdt_ccb_event(p_ccb, AVDT_CCB_API_DISCOVER_RSP_EVT, p_data);
+  if (p_ccb != NULL) {
+    bta_av_refresh_accept_signalling_timer(p_ccb->peer_addr);
+    /* send response */
+    avdt_ccb_event(p_ccb, AVDT_CCB_API_DISCOVER_RSP_EVT, p_data);
+  } else {
+    APPL_TRACE_DEBUG("p_ccb is NULL");
+  }
 }
 
 /*******************************************************************************
@@ -346,6 +419,7 @@ void avdt_ccb_hdl_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
  *
  ******************************************************************************/
 void avdt_ccb_hdl_discover_rsp(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   /* we're done with procedure */
   p_ccb->proc_busy = false;
 
@@ -370,11 +444,13 @@ void avdt_ccb_hdl_discover_rsp(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
 void avdt_ccb_hdl_getcap_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   tAVDT_SCB* p_scb;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   /* look up scb for seid sent to us */
   p_scb = avdt_scb_by_hdl(p_data->msg.single.seid);
 
   p_data->msg.svccap.p_cfg = &p_scb->cs.cfg;
 
+  bta_av_refresh_accept_signalling_timer(p_ccb->peer_addr);
   avdt_ccb_event(p_ccb, AVDT_CCB_API_GETCAP_RSP_EVT, p_data);
 }
 
@@ -394,6 +470,7 @@ void avdt_ccb_hdl_getcap_rsp(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   /* we're done with procedure */
   p_ccb->proc_busy = false;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   /* call app callback with results */
   (*p_ccb->proc_cback)(0, &p_ccb->peer_addr, AVDT_GETCAP_CFM_EVT,
                        (tAVDT_CTRL*)(&p_data->msg.svccap));
@@ -419,6 +496,8 @@ void avdt_ccb_hdl_start_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   uint8_t seid =
       avdt_scb_verify(p_ccb, AVDT_VERIFY_START, p_data->msg.multi.seid_list,
                       p_data->msg.multi.num_seps, &err_code);
+  AVDT_TRACE_DEBUG("%s: bd_add: %s, seid: %d", __func__,
+                     p_ccb->peer_addr.ToString().c_str(), seid);
   if (seid == 0 && err_code == 0) {
     /* we're ok, send response */
     avdt_ccb_event(p_ccb, AVDT_CCB_API_START_RSP_EVT, p_data);
@@ -484,6 +563,7 @@ void avdt_ccb_hdl_suspend_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   uint8_t seid;
   uint8_t err_code = 0;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   /* verify all streams in the right state */
   if ((seid = avdt_scb_verify(p_ccb, AVDT_VERIFY_SUSPEND,
                               p_data->msg.multi.seid_list,
@@ -524,6 +604,8 @@ void avdt_ccb_hdl_suspend_rsp(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   event = (p_data->msg.hdr.err_code == 0) ? AVDT_SCB_MSG_SUSPEND_RSP_EVT
                                           : AVDT_SCB_MSG_SUSPEND_REJ_EVT;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s, event: %d", __func__,
+                   p_ccb->peer_addr.ToString().c_str(), event);
   /* get to where seid's are stashed in current cmd */
   p = (uint8_t*)(p_ccb->p_curr_cmd + 1);
 
@@ -558,6 +640,7 @@ void avdt_ccb_snd_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   /* we're busy */
   p_ccb->proc_busy = true;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   /* build and queue discover req */
   avdt_msg_send_cmd(p_ccb, NULL, AVDT_SIG_DISCOVER, NULL);
 }
@@ -576,6 +659,7 @@ void avdt_ccb_snd_discover_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
  ******************************************************************************/
 void avdt_ccb_snd_discover_rsp(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   /* send response */
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   avdt_msg_send_rsp(p_ccb, AVDT_SIG_DISCOVER, &p_data->msg);
 }
 
@@ -602,6 +686,8 @@ void avdt_ccb_snd_getcap_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   /* we're busy */
   p_ccb->proc_busy = true;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s, sig_id: %d", __func__,
+            p_ccb->peer_addr.ToString().c_str(), p_data->msg.hdr.sig_id);
   /* build and queue discover req */
   if (p_data->msg.hdr.sig_id == AVDT_SIG_GET_ALLCAP)
     sig_id = AVDT_SIG_GET_ALLCAP;
@@ -624,6 +710,7 @@ void avdt_ccb_snd_getcap_cmd(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
 void avdt_ccb_snd_getcap_rsp(tAVDT_CCB* p_ccb, tAVDT_CCB_EVT* p_data) {
   uint8_t sig_id = AVDT_SIG_GETCAP;
 
+  AVDT_TRACE_DEBUG("%s: bd_add: %s", __func__, p_ccb->peer_addr.ToString().c_str());
   if (p_data->msg.hdr.sig_id == AVDT_SIG_GET_ALLCAP)
     sig_id = AVDT_SIG_GET_ALLCAP;
 

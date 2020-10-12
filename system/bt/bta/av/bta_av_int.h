@@ -119,6 +119,7 @@ enum {
   BTA_AV_ACP_CONNECT_EVT,
   BTA_AV_API_OFFLOAD_START_EVT,
   BTA_AV_API_OFFLOAD_START_RSP_EVT,
+  BTA_AV_RECONFIG_FAIL_EVT,
 
   /* these events are handled outside of the state machine */
   BTA_AV_API_ENABLE_EVT,
@@ -135,6 +136,7 @@ enum {
   BTA_AV_AVRC_RETRY_DISC_EVT,
   BTA_AV_CONN_CHG_EVT,
   BTA_AV_DEREG_COMP_EVT,
+  BTA_AV_BROWSE_ACTIVE_EVT,
 #if (AVDT_REPORTING == TRUE)
   BTA_AV_AVDT_RPT_CONN_EVT,
 #endif
@@ -145,10 +147,21 @@ enum {
   BTA_AV_ENABLE_MULTICAST_EVT, /* Event for enable and disable multicast */
   BTA_AV_RC_COLLISSION_DETECTED_EVT,
   BTA_AV_UPDATE_ENCODER_MODE_EVT,
+  BTA_AV_UPDATE_APTX_DATA_EVT,
 #if (TWS_ENABLED == TRUE)
+#if (TWS_STATE_ENABLED == TRUE)
+  BTA_AV_SET_EARBUD_STATE_EVT, /* Set TWS earbud state */
+#endif
   BTA_AV_SET_EARBUD_ROLE_EVT, /* Set TWS earbud role */
   BTA_AV_SET_TWS_DEVICE_EVT, /* Update TWS state */
 #endif
+};
+
+/* MultiBrowse specific connection events */
+enum {
+  BTA_AV_BROWSE_CONNECT,
+  BTA_AV_BROWSE_ACTIVE,
+  BTA_AV_BROWSE_HANDOFF,
 };
 
 /* events for AV control block state machine */
@@ -175,6 +188,8 @@ enum {
 /* Info ID from updating aptX Adaptive Encoder mode */
 #define BTA_AV_ENCODER_MODE_CHANGE_ID 5
 
+#define BTA_AV_ENCODER_DATA_ID 0x0E
+
 /* maximum number of SEPS in stream discovery results */
 #define BTA_AV_NUM_SEPS 32
 
@@ -200,6 +215,28 @@ enum {
              (((uint32_t)(*(p))) << 16));                                 \
     (p) += 3;                                                             \
   }
+
+/* A2dp sampling frequencies */
+
+#define SAMPLING_FREQ_44100 44100
+#define SAMPLING_FREQ_48000 48000
+#define SAMPLING_FREQ_88200 88200
+#define SAMPLING_FREQ_96000 96000
+#define SAMPLING_FREQ_176400 176400
+#define SAMPLING_FREQ_192000 192000
+#define SAMPLING_FREQ_16000 16000
+#define SAMPLING_FREQ_24000 24000
+
+/*Mapping of above sampling frequencies when sending VSC*/
+
+#define A2DP_SAMPLING_FREQ_44100 0x01
+#define A2DP_SAMPLING_FREQ_48000 0x02
+#define A2DP_SAMPLING_FREQ_88200 0x04
+#define A2DP_SAMPLING_FREQ_96000 0x08
+#define A2DP_SAMPLING_FREQ_176400 0x10
+#define A2DP_SAMPLING_FREQ_192000 0x20
+#define A2DP_SAMPLING_FREQ_16000 0x40
+#define A2DP_SAMPLING_FREQ_24000 0x80
 
 /*****************************************************************************
  *  Data types
@@ -304,6 +341,18 @@ typedef struct
 } tBTA_AV_ENABLE_MULTICAST;
 
 #if (TWS_ENABLED == TRUE)
+#define TWSP_EB_STATE_UNKNOWN 0
+#define TWSP_EB_STATE_IN_CASE 1
+#define TWSP_EB_STATE_OUT_OF_EAR 2
+#define TWSP_EB_STATE_IN_EAR 3
+/* data type for BTA_AV_TWS_SET_EARBUD_STATE_EVT */
+#if (TWS_STATE_ENABLED == TRUE)
+typedef struct
+{
+  BT_HDR hdr;
+  uint8_t eb_state;
+} tBTA_AV_TWS_SET_EARBUD_STATE;
+#endif
 /* data type for BTA_AV_TWS_SET_EARBUD_ROLE_EVT */
 typedef struct
 {
@@ -392,6 +441,11 @@ typedef struct {
   uint16_t enc_mode;
 } tBTA_AV_ENC_MODE;
 
+typedef struct {
+  BT_HDR hdr;
+  uint16_t type;
+  uint16_t data;
+} tBTA_AV_APTX_DATA;
 
 /* data type for BTA_AV_CI_SETCONFIG_OK_EVT and BTA_AV_CI_SETCONFIG_FAIL_EVT */
 typedef struct {
@@ -430,6 +484,7 @@ typedef struct {
   BT_HDR hdr;
   RawAddress peer_addr;
   uint8_t handle;
+  uint8_t status;
 } tBTA_AV_RC_CONN_CHG;
 
 /* data type for BTA_AV_AVRC_COLL_DETECTED_EVT */
@@ -438,6 +493,13 @@ typedef struct {
   RawAddress peer_addr;
   uint8_t handle;
 } tBTA_AV_RC_COLLISSION_DETECTED;
+
+/* data associated with BTA_AV_BROWSE_ACTIVE_EVT */
+typedef struct {
+  BT_HDR hdr;
+  uint8_t browse_device_evt;
+  RawAddress peer_addr;
+} tBTA_AV_API_ACTIVE_BROWSE_RC;
 
 /* data type for BTA_AV_CONN_CHG_EVT */
 typedef struct {
@@ -492,7 +554,7 @@ typedef struct {
 #define BTA_AV_ROLE_SUSPEND_OPT 0x40 /* Suspend on Start option is set */
 
 /* union of all event datatypes */
-typedef union {
+union tBTA_AV_DATA {
   BT_HDR hdr;
   tBTA_AV_API_ENABLE api_enable;
   tBTA_AV_API_REG api_reg;
@@ -517,11 +579,15 @@ typedef union {
   tBTA_AV_ENABLE_MULTICAST multicast_state;
   tBTA_AV_MAX_CLIENT max_av_clients;
   tBTA_AV_ENC_MODE encoder_mode;
+  tBTA_AV_APTX_DATA aptx_data;
 #if (TWS_ENABLED == TRUE)
+#if (TWS_STATE_ENABLED == TRUE)
+  tBTA_AV_TWS_SET_EARBUD_STATE tws_set_earbud_state;
+#endif
   tBTA_AV_TWS_SET_EARBUD_ROLE tws_set_earbud_role;
   tBTA_AV_SET_TWS_DEVICE tws_set_device;
 #endif
-} tBTA_AV_DATA;
+};
 
 typedef union {
   tBTA_AV_API_OPEN open; /* used only before open and role switch
@@ -559,7 +625,7 @@ typedef union {
   0x04 /* SetConfig indication has been called by remote */
 
 /* type for AV stream control block */
-typedef struct {
+struct tBTA_AV_SCB {
   const tBTA_AV_ACT* p_act_tbl; /* the action table for stream state machine */
   const tBTA_AV_CO_FUNCTS* p_cos; /* the associated callout functions */
   bool sdp_discovery_started; /* variable to determine whether SDP is started */
@@ -622,10 +688,15 @@ typedef struct {
   bool do_scrambling;
 //#ifdef TWS_ENABLED
   bool tws_device; //true for earbud false otherwise
+  uint8_t eb_state; //TWS+ EB state, IN-EAR=3, OUT-OF-EAR=2
   uint8_t channel_mode; //L:0 R:1 S:2 M:3
+  uint8_t start_pending;
   bool offload_started;
 //#endif
-} tBTA_AV_SCB;
+  bool vendor_start;
+  tBTA_AV_CI_SETCONFIG *cache_setconfig;
+  int rc_ccb_alloc_handle;
+};
 
 #define BTA_AV_RC_ROLE_MASK 0x10
 #define BTA_AV_RC_ROLE_INT 0x00
@@ -642,6 +713,10 @@ typedef struct {
   uint8_t lidx;               /* (index+1) to LCB */
   tBTA_AV_FEAT peer_features; /* peer features mask */
   uint16_t  cover_art_psm;  /* l2cap psm for cover art on remote */
+  bool is_browse_active;    /* active for browse connetion */
+  bool browse_open;
+  bool rc_opened;
+  RawAddress peer_addr;
 } tBTA_AV_RCB;
 #define BTA_AV_NUM_RCB (BTA_AV_NUM_STRS + 2)
 
@@ -717,6 +792,22 @@ typedef struct {
   tBTA_AV_SCB* p_scb;
 }tBT_VENDOR_A2DP_OFFLOAD;
 
+// A2DP offload VSC parameters
+class tBT_A2DP_OFFLOAD {
+ public:
+  uint32_t codec_type;            /* codec types ex: SBC/AAC/LDAC/APTx */
+  uint16_t max_latency;           /* maximum latency */
+  uint16_t scms_t_enable;         /* content protection enable */
+  uint32_t sample_rate;           /* Sample rates ex: 44.1/48/88.2/96 Khz */
+  uint8_t bits_per_sample;        /* bits per sample ex: 16/24/32 */
+  uint8_t ch_mode;                /* None:0 Left:1 Right:2 */
+  uint32_t encoded_audio_bitrate; /* encoder audio bitrates */
+  uint16_t acl_hdl;               /* connection handle */
+  uint16_t l2c_rcid;              /* l2cap channel id */
+  uint16_t mtu;                   /* MTU size */
+  uint8_t codec_info[32];         /* Codec specific information */
+};
+
 extern tBT_VENDOR_A2DP_OFFLOAD offload_start;
 
 /* Vendor OFFLOAD VSC */
@@ -771,7 +862,7 @@ extern uint16_t bta_av_chk_mtu(tBTA_AV_SCB* p_scb, uint16_t mtu);
 extern void bta_av_conn_cback(uint8_t handle, const RawAddress* bd_addr,
                               uint8_t event, tAVDT_CTRL* p_data);
 extern uint8_t bta_av_rc_create(tBTA_AV_CB* p_cb, uint8_t role, uint8_t shdl,
-                                uint8_t lidx);
+                                uint8_t lidx, RawAddress *addr);
 extern void bta_av_stream_chg(tBTA_AV_SCB* p_scb, bool started);
 extern bool bta_av_is_scb_opening(tBTA_AV_SCB* p_scb);
 extern bool bta_av_is_scb_incoming(tBTA_AV_SCB* p_scb);
@@ -780,6 +871,7 @@ extern bool bta_av_is_scb_init(tBTA_AV_SCB* p_scb);
 extern void bta_av_set_scb_sst_incoming(tBTA_AV_SCB* p_scb);
 extern tBTA_AV_LCB* bta_av_find_lcb(const RawAddress& addr, uint8_t op);
 extern bool bta_av_is_multicast_enabled();
+extern void bta_av_free_scb(tBTA_AV_SCB* p_scb);
 
 /* main functions */
 extern void bta_av_api_deregister(tBTA_AV_DATA* p_data);
@@ -808,6 +900,8 @@ extern void bta_av_conn_chg(tBTA_AV_DATA* p_data);
 extern void bta_av_dereg_comp(tBTA_AV_DATA* p_data);
 extern void bta_av_rc_collission_detected(tBTA_AV_DATA *p_data);
 extern void bta_av_update_enc_mode(tBTA_AV_DATA* p_data);
+extern void bta_av_update_aptx_data(tBTA_AV_DATA* p_data);
+extern void bta_av_active_browse(tBTA_AV_DATA *p_data);
 
 /* sm action functions */
 extern void bta_av_disable(tBTA_AV_CB* p_cb, tBTA_AV_DATA* p_data);
@@ -877,6 +971,7 @@ extern void bta_av_open_at_inc(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data);
 extern void bta_av_offload_req(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data);
 extern void bta_av_offload_rsp(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data);
 extern void bta_av_vendor_offload_stop(tBTA_AV_SCB* p_scb);
+extern void bta_av_disc_fail_as_acp(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* p_data);
 #if (TWS_ENABLED == TRUE)
 extern void bta_av_set_tws_chn_mode(tBTA_AV_SCB* p_scb, bool adjust);
 #endif

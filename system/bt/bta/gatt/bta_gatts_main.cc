@@ -44,6 +44,7 @@ tBTA_GATTS_CB bta_gatts_cb;
  ******************************************************************************/
 bool bta_gatts_hdl_event(BT_HDR* p_msg) {
   tBTA_GATTS_CB* p_cb = &bta_gatts_cb;
+  VLOG(1) << __func__ << ": event = " << +p_msg->event;
 
   switch (p_msg->event) {
     case BTA_GATTS_API_DISABLE_EVT:
@@ -89,8 +90,7 @@ bool bta_gatts_hdl_event(BT_HDR* p_msg) {
       if (p_srvc_cb != NULL)
         bta_gatts_delete_service(p_srvc_cb, (tBTA_GATTS_DATA*)p_msg);
       else
-        APPL_TRACE_ERROR("%s: can't delete service - no srvc_cb found",
-                         __func__);
+        LOG(ERROR) << __func__ << ": can't delete service - no srvc_cb found";
 
       break;
     }
@@ -102,7 +102,7 @@ bool bta_gatts_hdl_event(BT_HDR* p_msg) {
       if (p_srvc_cb != NULL)
         bta_gatts_stop_service(p_srvc_cb, (tBTA_GATTS_DATA*)p_msg);
       else
-        APPL_TRACE_ERROR("%s: can't stop service - no srvc_cb found", __func__);
+        LOG(ERROR) << __func__ << ": can't stop service - no srvc_cb found";
 
       break;
     }

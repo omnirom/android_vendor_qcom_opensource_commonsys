@@ -45,18 +45,12 @@ typedef enum {
 #ifndef PCE_PEER_VERSION_CONF_FILE
 #define PCE_PEER_VERSION_CONF_FILE "/data/misc/bluedroid/pce_peer_entries.conf"
 #endif
+/* Runtime configuration file to store MCE version file*/
+#ifndef MCE_PEER_VERSION_CONF_FILE
+#define MCE_PEER_VERSION_CONF_FILE "/data/misc/bluedroid/mce_peer_entries.conf"
+#endif
 
 #define LOG_ID_STATS_A2DP      (0x06 << 8) | 0x00
-typedef enum {
-    BT_SOC_DEFAULT = 0,
-    BT_SOC_SMD = BT_SOC_DEFAULT,
-    BT_SOC_AR3K,
-    BT_SOC_ROME,
-    BT_SOC_CHEROKEE,
-    BT_SOC_HASTINGS,
-    /* Add chipset type here */
-    BT_SOC_RESERVED
-} bt_soc_type;
 
 /*******************************************************************************
  *  Functions
@@ -64,7 +58,6 @@ typedef enum {
 
 void raise_priority_a2dp(tHIGH_PRIORITY_TASK high_task);
 bool is_device_present(char* header, unsigned char* device_details);
-bt_soc_type get_soc_type();
 uint32_t bt_devclass_to_uint(DEV_CLASS dev_class);
 bool is_iot_info_report_enabled();
 

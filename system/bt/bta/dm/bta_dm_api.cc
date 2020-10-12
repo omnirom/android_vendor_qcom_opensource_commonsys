@@ -264,6 +264,24 @@ void BTA_DmSearchCancel(void) {
 
 /*******************************************************************************
  *
+ * Function         BTA_DmPowerBackOff
+ *
+ * Description      This function sets/resets PowerBackOff
+ *
+ * Returns          void
+ *
+ *******************************************************************************/
+void BTA_DmPowerBackOff(bool status) {
+  tBTA_DM_API_SET_PWR_BACKOFF *p_msg =
+      (tBTA_DM_API_SET_PWR_BACKOFF *)osi_calloc(sizeof(tBTA_DM_API_SET_PWR_BACKOFF));
+
+  p_msg->hdr.event = BTA_DM_API_SET_PWR_BACKOFF_EVT;
+  p_msg->status = status;
+  bta_sys_sendmsg(p_msg);
+}
+
+/*******************************************************************************
+ *
  * Function         BTA_DmSetWifiState
  *
  * Description      This function sets wifi on/off state
@@ -277,6 +295,40 @@ void BTA_DmSetWifiState(bool status) {
 
   p_msg->hdr.event = BTA_DM_API_SET_WIFI_STATE_EVT;
   p_msg->status = status;
+  bta_sys_sendmsg(p_msg);
+}
+
+/*******************************************************************************
+ *
+ * Function         BTA_DmBredrCleanup
+ *
+ * Description      This function do br/edr cleanup
+ *
+ * Returns          void
+ *
+ *******************************************************************************/
+void BTA_DmBredrCleanup(void) {
+  tBTA_DM_API_BREDR_CLEANUP *p_msg =
+      (tBTA_DM_API_BREDR_CLEANUP*)osi_calloc(sizeof(tBTA_DM_API_BREDR_CLEANUP));
+
+  p_msg->hdr.event = BTA_DM_API_BREDR_CLEANUP_EVT;
+  bta_sys_sendmsg(p_msg);
+}
+
+/*******************************************************************************
+ *
+ * Function         BTA_DmBredrStartup
+ *
+ * Description      This function do br/edr startup
+ *
+ * Returns          void
+ *
+ *******************************************************************************/
+void BTA_DmBredrStartup(void) {
+  tBTA_DM_API_BREDR_STARTUP *p_msg =
+      (tBTA_DM_API_BREDR_STARTUP*)osi_calloc(sizeof(tBTA_DM_API_BREDR_STARTUP));
+
+  p_msg->hdr.event = BTA_DM_API_BREDR_STARTUP_EVT;
   bta_sys_sendmsg(p_msg);
 }
 
@@ -400,6 +452,27 @@ void BTA_DmBondCancel(const RawAddress& bd_addr) {
   bta_sys_sendmsg(p_msg);
 }
 
+
+/*******************************************************************************
+ *
+ * Function         BTA_DmResetPairingflag
+ *
+ * Description      This function reset pairing flag
+ *
+ *
+ * Returns          void
+ *
+ ******************************************************************************/
+void BTA_DmResetPairingflag(const RawAddress& bd_addr) {
+  tBTA_DM_API_RST_PAIR_FLAG* p_msg =
+      (tBTA_DM_API_RST_PAIR_FLAG*)osi_malloc(sizeof(tBTA_DM_API_RST_PAIR_FLAG));
+
+  p_msg->hdr.event = BTA_DM_API_RST_PAIR_FLAG_EVT;
+  p_msg->bd_addr = bd_addr;
+
+  bta_sys_sendmsg(p_msg);
+}
+
 /*******************************************************************************
  *
  * Function         BTA_DmPinReply
@@ -483,9 +556,10 @@ void BTA_DmConfirm(const RawAddress& bd_addr, bool accept) {
  *
  ******************************************************************************/
 void BTA_DmAddDevice(const RawAddress& bd_addr, DEV_CLASS dev_class,
-                     LINK_KEY link_key, tBTA_SERVICE_MASK trusted_mask,
+                     const LinkKey& link_key, tBTA_SERVICE_MASK trusted_mask,
                      bool is_trusted, uint8_t key_type, tBTA_IO_CAP io_cap,
                      uint8_t pin_length) {
+
   tBTA_DM_API_ADD_DEVICE* p_msg =
       (tBTA_DM_API_ADD_DEVICE*)osi_calloc(sizeof(tBTA_DM_API_ADD_DEVICE));
 
@@ -494,12 +568,9 @@ void BTA_DmAddDevice(const RawAddress& bd_addr, DEV_CLASS dev_class,
   p_msg->tm = trusted_mask;
   p_msg->is_trusted = is_trusted;
   p_msg->io_cap = io_cap;
-
-  if (link_key) {
-    p_msg->link_key_known = true;
-    p_msg->key_type = key_type;
-    memcpy(p_msg->link_key, link_key, LINK_KEY_LEN);
-  }
+  p_msg->key_type = key_type;
+  p_msg->link_key_known = true;
+  p_msg->link_key = link_key;
 
   /* Load device class if specified */
   if (dev_class) {
@@ -842,17 +913,6 @@ void BTA_DmSetBleConnScanParams(uint32_t scan_interval, uint32_t scan_window) {
   p_msg->scan_int = scan_interval;
   p_msg->scan_window = scan_window;
 
-  bta_sys_sendmsg(p_msg);
-}
-
-/**
- * Set BLE connectable mode to auto connect
- */
-void BTA_DmBleStartAutoConn() {
-  tBTA_DM_API_SET_NAME* p_msg =
-      (tBTA_DM_API_SET_NAME*)osi_calloc(sizeof(tBTA_DM_API_SET_NAME));
-
-  p_msg->hdr.event = BTA_DM_API_BLE_SET_BG_CONN_TYPE;
   bta_sys_sendmsg(p_msg);
 }
 
@@ -1287,17 +1347,19 @@ void BTA_DmProcessQueuedServiceDiscovery(void) {
 
     tBTA_DM_MSG* p_data =(tBTA_DM_MSG*) bta_dm_search_cb.p_disc_queue.front();
     bta_dm_search_cb.p_disc_queue.pop();
-    RawAddress bda = p_data->discover.bd_addr;
+    if (p_data != NULL) {
+      RawAddress bda = p_data->discover.bd_addr;
 
-    if (p_data->discover.transport != BT_TRANSPORT_INVALID) {
-      transport = p_data->discover.transport;
-    }
-    if (BTM_IsAclConnectionUp(bda, transport)) {
-      bta_sys_sendmsg(p_data);
-      break;
-    }
-    else if (p_data) {
-      osi_free(p_data);
+      if (p_data->discover.transport != BT_TRANSPORT_INVALID) {
+        transport = p_data->discover.transport;
+      }
+      if (BTM_IsAclConnectionUp(bda, transport)) {
+        bta_sys_sendmsg(p_data);
+        break;
+      }
+      else {
+        osi_free(p_data);
+      }
     }
   }
 }

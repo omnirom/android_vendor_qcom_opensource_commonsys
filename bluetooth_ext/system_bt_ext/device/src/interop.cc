@@ -47,7 +47,7 @@
 static const char *INTEROP_FILE_PATH = "interop_database.conf";
 #else  // !defined(OS_GENERIC)
 static const char *INTEROP_DYNAMIC_FILE_PATH = "/data/misc/bluedroid/interop_database_dynamic.conf";
-static const char *INTEROP_STATIC_FILE_PATH = "/etc/bluetooth/interop_database.conf";
+static const char *INTEROP_STATIC_FILE_PATH = "/system_ext/etc/bluetooth/interop_database.conf";
 #endif  // defined(OS_GENERIC)
 
 list_t *interop_list = NULL;
@@ -165,6 +165,14 @@ bool interop_match_name(const interop_feature_t feature,
   return (interop_database_match_name(feature, name));
 }
 
+bool interop_get_whitelisted_media_players_list(list_t** p_bl_devices)
+{
+   interop_feature_t feature = INTEROP_BROWSE_PLAYER_WHITE_LIST;
+   LOG_DEBUG(LOG_TAG, "%s :", __func__);
+
+  return (interop_database_get_whitelisted_media_players_list(feature, p_bl_devices));
+}
+
 bool interop_match_addr_or_name(const interop_feature_t feature,
                 const RawAddress *addr)
 {
@@ -256,6 +264,8 @@ static const char* interop_feature_string_(const interop_feature_t feature)
     CASE_RETURN_STR(INTEROP_DISABLE_SNIFF_DURING_CALL)
     CASE_RETURN_STR(INTEROP_HID_HOST_LIMIT_SNIFF_INTERVAL)
     CASE_RETURN_STR(INTEROP_DISABLE_LPA_ENHANCED_POWER_CONTROL)
+    CASE_RETURN_STR(INTEROP_DISABLE_REFRESH_ACCPET_SIG_TIMER)
+    CASE_RETURN_STR(INTEROP_BROWSE_PLAYER_WHITE_LIST)
     CASE_RETURN_STR(END_OF_INTEROP_LIST)
   }
   return "UNKNOWN";
@@ -373,6 +383,18 @@ static bool interop_config_remove(const char *section, const char *key)
 
   pthread_mutex_lock(&file_lock);
   bool ret = config_remove_key(config_dynamic, section, key);
+  pthread_mutex_unlock(&file_lock);
+
+  return ret;
+}
+
+static bool interop_config_remove_section(const char *section)
+{
+  assert(config_dynamic != NULL);
+  assert(section != NULL);
+
+  pthread_mutex_lock(&file_lock);
+  bool ret = config_remove_section(config_dynamic, section);
   pthread_mutex_unlock(&file_lock);
 
   return ret;
@@ -1348,6 +1370,30 @@ bool interop_database_remove_addr(const interop_feature_t feature,
   return false;
 }
 
+bool interop_database_remove_feature(const interop_feature_t feature)
+{
+  for (const list_node_t *node = list_begin(config_dynamic->sections);
+       node != list_end(config_dynamic->sections); node = list_next(node)) {
+    interop_section_t *sec = (interop_section_t *)list_node(node);
+    if ( feature == get_feature(sec->name)) {
+      LOG_DEBUG(LOG_TAG,"%s(): found feature - %s",__func__, interop_feature_string_(feature));
+      for (const list_node_t *node_entry = list_begin(sec->entries);
+           node_entry != list_end(sec->entries);
+           node_entry = list_next(node_entry)) {
+        interop_entry_t *entry = (interop_entry_t *)list_node(node_entry);
+
+        // first remove all entries from linked list
+        pthread_mutex_lock(&interop_list_lock);
+        list_remove(interop_list, (void*)entry);
+        pthread_mutex_unlock(&interop_list_lock);
+      }
+      interop_config_remove_section(sec->name);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool interop_database_remove_vndr_prdt(const interop_feature_t feature,
           uint16_t vendor_id, uint16_t product_id)
 {
@@ -1417,3 +1463,24 @@ bool interop_database_remove_version(const interop_feature_t feature, uint16_t v
 }
 
 
+bool interop_database_get_whitelisted_media_players_list( const interop_feature_t feature, list_t** p_bl_devices)
+{
+
+  LOG_DEBUG(LOG_TAG,"%s() ",__func__);
+
+  for (const list_node_t *node = list_begin(config_static->sections);
+      node != list_end(config_static->sections); node = list_next(node)) {
+    interop_section_t *sec = (interop_section_t *)list_node(node);
+    if ( feature == get_feature(sec->name)) {
+      LOG_ERROR(LOG_TAG,"%s(): found feature - %s",__func__, interop_feature_string_(feature));
+      for (const list_node_t *node_entry = list_begin(sec->entries);
+           node_entry != list_end(sec->entries);
+           node_entry = list_next(node_entry)) {
+        interop_entry_t *entry = (interop_entry_t *)list_node(node_entry);
+        list_append(*p_bl_devices, entry->key);
+      }
+      return true;
+    }
+  }
+  return false;
+}

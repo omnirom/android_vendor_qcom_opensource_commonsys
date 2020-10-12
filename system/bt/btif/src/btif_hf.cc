@@ -68,6 +68,10 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <log/log.h>
 
 #include "bta/include/bta_ag_api.h"
+#if (SWB_ENABLED == TRUE)
+#include "bta_ag_swb.h"
+#include <hardware/vendor_hf.h>
+#endif
 #include "bta/include/utl.h"
 #include "bta_ag_api.h"
 #include "btif_common.h"
@@ -81,6 +85,7 @@ IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #if (TWS_AG_ENABLED == TRUE)
 #include "btif_tws_plus.h"
 #include "btif_twsp_hf.h"
+#include "bta_ag_twsp.h"
 #endif
 #include "device/include/device_iot_config.h"
 
@@ -132,19 +137,6 @@ static uint32_t btif_hf_features = BTIF_HF_FEATURES;
 uint16_t btif_max_hf_clients = 1;
 static RawAddress active_bda = {};
 
-typedef enum {
-  BTIF_HF_ID_1 = 0,
-  BTIF_HF_ID_2,
-#if (BTIF_HF_NUM_CB == 3)
-  BTIF_HF_ID_3
-#endif
-} bthf_hf_id_t;
-
-uint16_t bthf_hf_id[BTIF_HF_NUM_CB] = {BTIF_HF_ID_1, BTIF_HF_ID_2,
-#if (BTIF_HF_NUM_CB == 3)
-                                       BTIF_HF_ID_3
-#endif
-};
 /*******************************************************************************
  *  Local type definitions
  ******************************************************************************/
@@ -192,8 +184,10 @@ btif_hf_cb_t btif_hf_cb[BTA_AG_MAX_NUM_CLIENTS];
 #endif
 
 static bool btif_conf_hf_force_wbs = BTIF_HF_WBS_PREFERRED;
-bool send_bvra_other_index = FALSE;
-int bvra_other_index_state  = 0;
+#if (TWS_AG_ENABLED == TRUE)
+static bool btif_twsp_send_bvra_update = FALSE;
+static int btif_twsp_bvra_peer_eb_state = BTHF_VR_STATE_STOPPED;
+#endif
 
 /*******************************************************************************
  *  Functions
@@ -222,7 +216,22 @@ const char* dump_hf_call_state(bthf_call_state_t call_state) {
  * no active device is set (i.e. active_device_addr is empty)
  */
 static bool is_active_device(const RawAddress& bd_addr) {
-  return !active_bda.IsEmpty() && active_bda == bd_addr;
+  bool ret = false;
+#if (TWS_AG_ENABLED == TRUE)
+  RawAddress peer_eb_addr;
+  RawAddress cur_bd_addr = bd_addr;
+  if (btif_is_tws_plus_device(&bd_addr)) {
+      btif_tws_plus_get_peer_eb_addr(&cur_bd_addr, &peer_eb_addr);
+      ret = !active_bda.IsEmpty() &&
+                 (active_bda == bd_addr || peer_eb_addr == active_bda);
+  } else {
+#endif
+      ret = !active_bda.IsEmpty() && active_bda == bd_addr;
+#if (TWS_AG_ENABLED == TRUE)
+  }
+#endif
+  BTIF_TRACE_EVENT("%s: returns: %d", __func__, ret);
+  return ret;
 }
 
 /*******************************************************************************
@@ -244,88 +253,23 @@ bool is_connected(RawAddress* bd_addr) {
   }
   return false;
 }
-/*******************************************************************************
-**
-** Function         btif_hf_is_connected_on_other_idx
-**
-** Description      Checks if any other AV SCB is connected
-**
-** Returns          bool
-**
-*******************************************************************************/
-
-bool btif_hf_is_connected_on_other_idx(int current_index)
-{
-    int i;
-    for (i = 0; i < btif_max_hf_clients; i++)
-    {
-        if (i != current_index)
-        {
-            if ((btif_hf_cb[i].state == BTHF_CONNECTION_STATE_CONNECTED) ||
-                 (btif_hf_cb[i].state == BTHF_CONNECTION_STATE_SLC_CONNECTED))
-                return TRUE;
-        }
-    }
-    return FALSE;
-}
 
 /*******************************************************************************
-**
-** Function         btif_hf_get_other_connected_index
-**
-** Description      Checks for other connected index
-**
-** Returns          Other connected index
-**
-*******************************************************************************/
-
-int btif_hf_get_other_connected_index(int current_index)
-{
-    int i;
-    for (i = 0; i < btif_max_hf_clients; i++)
-    {
-        if (i != current_index)
-        {
-            if ((btif_hf_cb[i].state == BTHF_CONNECTION_STATE_CONNECTED) ||
-                 (btif_hf_cb[i].state == BTHF_CONNECTION_STATE_SLC_CONNECTED))
-                return i;
-        }
-    }
-    return btif_max_hf_clients;
-}
-
-/*******************************************************************************
-**
-** Function         send_bvra_update
-**
-** Description      Internal function to updated other connected HS for BVRA state
-**
-** Returns          void
-**
-*******************************************************************************/
-static void send_bvra_update(int index)
-{
-    BTIF_TRACE_EVENT("connected %d",btif_hf_is_connected_on_other_idx(index));
-    if (btif_hf_is_connected_on_other_idx(index))
-    {
-        int other_idx = btif_hf_get_other_connected_index(index);
-        BTIF_TRACE_EVENT("other_idx %d",other_idx);
-        if (other_idx < btif_max_hf_clients &&
-                (btif_hf_cb[other_idx].peer_feat & BTA_AG_PEER_FEAT_VREC))
-        {
-            tBTA_AG_RES_DATA ag_res;
-            memset(&ag_res, 0, sizeof(ag_res));
-            ag_res.state = bvra_other_index_state;
-            BTIF_TRACE_EVENT("sending on idex %d",other_idx);
-            BTA_AgResult (btif_hf_cb[other_idx].handle,
-                    BTA_AG_BVRA_RES, &ag_res);
-        }
-        else
-        {
-            BTIF_TRACE_EVENT("Invalid connected index");
-        }
-    }
-
+ *
+ * Function         get_connected_dev_count
+ *
+ * Description      Internal function to check number of connected devices
+ *
+ * Returns          number of connected devices
+ *
+ ******************************************************************************/
+static int get_connected_dev_count() {
+  int i, count = 0;
+  for (i = 0; i < btif_max_hf_clients; ++i) {
+    if (btif_hf_cb[i].state == BTHF_CONNECTION_STATE_SLC_CONNECTED)
+      count++;
+  }
+  return count;
 }
 
 /*******************************************************************************
@@ -490,7 +434,14 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
 
   BTIF_TRACE_IMP("%s: event=%s", __func__, dump_hf_event(event));
   // for BTA_AG_ENABLE_EVT/BTA_AG_DISABLE_EVT, p_data is NULL
-  if (event == BTA_AG_ENABLE_EVT || event == BTA_AG_DISABLE_EVT)
+  if (event == BTA_AG_ENABLE_EVT) {
+    // let bta also know about the max hf clients
+    BTIF_TRACE_DEBUG("%s: notify max hf clients to bta", __func__);
+    BTA_AgSetMaxHfClients(btif_max_hf_clients);
+    return;
+  }
+
+  if (event == BTA_AG_DISABLE_EVT)
     return;
 
   // p_data is NULL for any other event, return
@@ -609,6 +560,9 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       BTIF_TRACE_DEBUG("%s: Moving the audio_state to DISCONNECTED for device %s",
                        __FUNCTION__, btif_hf_cb[idx].connected_bda.ToString().c_str());
       btif_hf_cb[idx].audio_state = BTHF_AUDIO_STATE_DISCONNECTED;
+#if (TWS_AG_ENABLED == TRUE)
+      btif_hf_cb[idx].twsp_state = TWSPLUS_EB_STATE_UNKNOWN;
+#endif
       BTIF_TRACE_DEBUG(
           "%s: BTA_AG_CLOSE_EVT,"
           "idx = %d, btif_hf_cb.handle = %d",
@@ -620,13 +574,6 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       {
         HAL_HF_CBACK(bt_hf_callbacks, ConnectionStateCallback, btif_hf_cb[idx].state,
                   &btif_hf_cb[idx].connected_bda);
-        //If the active device is disconnected, clear the active device
-        if (is_active_device(btif_hf_cb[idx].connected_bda)) {
-          active_bda = RawAddress::kEmpty;
-          BTIF_TRACE_IMP("%s: Active device is disconnected, clear the active device %s",
-              __func__, active_bda.ToString().c_str());
-          BTA_AgSetActiveDevice(active_bda);
-        }
       }
 #if (TWS_AG_ENABLED == TRUE)
       bd_addr = btif_hf_cb[idx].connected_bda;
@@ -651,6 +598,23 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       btif_hf_cb[idx].connected_bda = RawAddress::kAny;
       btif_hf_cb[idx].peer_feat = 0;
       clear_phone_state_multihf(idx);
+      /* Not clear active device if HFP is conntected via another Rfcomm DLC connection
+         due to collision */
+      if (!((btif_max_hf_clients > 1) && (is_connected(&bd_addr)))) {
+        //If the active device is disconnected, clear the active device
+        if (is_active_device(bd_addr)) {
+          bool is_twsp_dev = btif_is_tws_plus_device(&bd_addr);
+          /*Clear active device only if given tws+ is active*/
+          if (!is_twsp_dev || (is_twsp_dev && active_bda == bd_addr)) {
+              active_bda = RawAddress::kEmpty;
+              BTIF_TRACE_IMP("%s: Active device is disconnected, clear the active device %s",
+                  __func__, active_bda.ToString().c_str());
+              BTA_AgSetActiveDevice(active_bda);
+          } else {
+              BTIF_TRACE_IMP("%s:non-active TWS+ device disconnected",__func__);
+          }
+        }
+      }
       /* If AG_OPEN was received but SLC was not setup in a specified time (10
        *seconds),
        ** then AG_CLOSE may be received. We need to advance the queue here
@@ -703,26 +667,17 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
       }
 #endif
       btif_hf_cb[idx].audio_state = BTHF_AUDIO_STATE_DISCONNECTED;
-      HAL_HF_CBACK(bt_hf_callbacks, AudioStateCallback, BTHF_AUDIO_STATE_DISCONNECTED,
+
+      // Ignore SCO disconnection event if SLC is already disconnected
+      if (btif_hf_cb[idx].state == BTHF_CONNECTION_STATE_SLC_CONNECTED) {
+        HAL_HF_CBACK(bt_hf_callbacks, AudioStateCallback, BTHF_AUDIO_STATE_DISCONNECTED,
                 &btif_hf_cb[idx].connected_bda);
+      }
       break;
 
     /* BTA auto-responds, silently discard */
     case BTA_AG_SPK_EVT:
-#if (TWS_AG_ENABLED == TRUE)
-        if (btif_is_tws_plus_device(&btif_hf_cb[idx].connected_bda)) {
-            tBTA_AG_RES_DATA ag_res;
-            int other_idx;
-            memset(&ag_res, 0, sizeof(tBTA_AG_RES_DATA));
-            ag_res.num = p_data->val.num;
-            other_idx = btif_hf_get_other_connected_index(idx);
-            if (other_idx != btif_max_hf_clients) {
-                BTA_AgResult(
-                   btif_hf_cb[other_idx].handle,
-                   BTA_AG_SPK_RES, &ag_res);
-            }
-        }
-#endif
+        FALLTHROUGH;
     case BTA_AG_MIC_EVT:
       HAL_HF_CBACK(bt_hf_callbacks, VolumeControlCallback,
                 (event == BTA_AG_SPK_EVT) ? BTHF_VOLUME_TYPE_SPK
@@ -760,8 +715,13 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
                 (p_data->val.num == 1) ? BTHF_VR_STATE_STARTED
                                        : BTHF_VR_STATE_STOPPED,
                 &btif_hf_cb[idx].connected_bda);
-            send_bvra_other_index = TRUE;
-            bvra_other_index_state = p_data->val.num;
+#if (TWS_AG_ENABLED == TRUE)
+      if (btif_is_tws_plus_device(&btif_hf_cb[idx].connected_bda)) {
+        BTIF_TRACE_DEBUG("%s: VR is initiated from TWS+ device, idx: %d", __FUNCTION__, idx);
+        btif_twsp_send_bvra_update = TRUE;
+        btif_twsp_bvra_peer_eb_state = p_data->val.num;
+      }
+#endif
       break;
 
     case BTA_AG_AT_NREC_EVT:
@@ -793,6 +753,14 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
                   &btif_hf_cb[idx].connected_bda);
       }
       break;
+
+#if SWB_ENABLED
+    case BTA_AG_SWB_EVT:
+      BTIF_TRACE_DEBUG("%s: AG final selected SWB codec is 0x%02x 0=Q0 4=Q1 6=Q3 7=Q4",
+                       __func__, p_data->val.num);
+      btif_handle_vendor_hf_events(event, p_data, &btif_hf_cb[idx].connected_bda);
+      break;
+#endif
 
     /* Java needs to send OK/ERROR for these commands */
     case BTA_AG_AT_CHLD_EVT:
@@ -852,6 +820,32 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
               &btif_hf_cb[idx].connected_bda);
       break;
 
+#if (SWB_ENABLED == TRUE)
+    case BTA_AG_AT_QAC_EVT:
+      BTIF_TRACE_DEBUG("QAC-EVT: AG Bitmap of peer-codecs %d", p_data->val.num);
+      /* If the peer supports SWB and the BTIF preferred codec is also SWB,
+      then we should set the BTA AG Codec to SWB. This would trigger a +QCS
+      to SWB at the time of SCO connection establishment */
+      if (!get_swb_codec_status()) break;
+
+      if (p_data->val.num == BTA_AG_SCO_SWB_SETTINGS_Q0) {
+        BTIF_TRACE_EVENT("%s: btif_hf override-Preferred Codec to SWB",
+                         __func__);
+        BTA_AgSetCodec(btif_hf_cb[idx].handle, BTA_AG_SCO_SWB_SETTINGS_Q0);
+      } else {
+        BTIF_TRACE_EVENT("%s btif_hf override-Preferred Codec to MSBC",
+                         __func__);
+        BTA_AgSetCodec(btif_hf_cb[idx].handle, BTA_AG_CODEC_MSBC);
+      }
+      break;
+
+    case BTA_AG_AT_QCS_EVT:
+      BTIF_TRACE_DEBUG("%s: AG final selected SWB codec is 0x%02x 0=Q0 4=Q1 6=Q3 7=Q4",
+                       __func__, p_data->val.num);
+      btif_handle_vendor_hf_events(event, p_data, &btif_hf_cb[idx].connected_bda);
+      break;
+#endif
+
     case BTA_AG_AT_BIND_EVT:
       if (p_data->val.hdr.status == BTA_AG_SUCCESS) {
         HAL_HF_CBACK(bt_hf_callbacks, AtBindCallback, p_data->val.str,
@@ -865,6 +859,21 @@ static void btif_hf_upstreams_evt(uint16_t event, char* p_param) {
                 (int)p_data->val.num, &btif_hf_cb[idx].connected_bda);
       }
       break;
+
+    case BTA_AG_TWSP_STATE_UPDATE:
+      BTIF_TRACE_DEBUG("%s: Twsp state update idx: %d, state: %d",
+                      __func__, idx, p_data->val.num);
+      btif_hf_cb[idx].twsp_state = p_data->val.num;
+      break;
+
+    case BTA_AG_TWSP_BATTERY_UPDATE: {
+        BTIF_TRACE_DEBUG("%s: Twsp battery status update : %s",
+                                           __func__, p_data->val.str);
+        btif_handle_vendor_hf_events(event, p_data,
+                               &btif_hf_cb[idx].connected_bda);
+    }
+    break;
+
     default:
       BTIF_TRACE_WARNING("%s: Unhandled event: %d", __func__, event);
       break;
@@ -919,7 +928,7 @@ static void bte_hf_evt(tBTA_AG_EVT event, tBTA_AG* p_data) {
  * Returns          void
  *
  ******************************************************************************/
-static void btif_in_hf_generic_evt(uint16_t event, char* p_param) {
+void btif_in_hf_generic_evt(uint16_t event, char* p_param) {
   int idx = btif_hf_idx_by_bdaddr((RawAddress*)p_param);
 
   BTIF_TRACE_EVENT("%s: event=%d", __func__, event);
@@ -929,12 +938,25 @@ static void btif_in_hf_generic_evt(uint16_t event, char* p_param) {
     return;
   }
 
+  BTIF_TRACE_DEBUG("%s: audio state = %d for device: %s", __func__,
+       btif_hf_cb[idx].audio_state, btif_hf_cb[idx].connected_bda.ToString().c_str());
   switch (event) {
     case BTIF_HFP_CB_AUDIO_CONNECTING: {
-      BTIF_TRACE_DEBUG("%s: Moving the audio_state to CONNECTING for device %s",
+      if (btif_hf_cb[idx].audio_state != BTHF_AUDIO_STATE_CONNECTED) {
+        BTIF_TRACE_DEBUG("%s: Moving the audio_state to CONNECTING for device %s",
+                  __FUNCTION__, btif_hf_cb[idx].connected_bda.ToString().c_str());
+        btif_hf_cb[idx].audio_state = BTHF_AUDIO_STATE_CONNECTING;
+        HAL_HF_CBACK(bt_hf_callbacks, AudioStateCallback, BTHF_AUDIO_STATE_CONNECTING,
+                &btif_hf_cb[idx].connected_bda);
+      } else {
+        BTIF_TRACE_WARNING("%s :unexpected audio state", __func__);
+      }
+    } break;
+    case BTIF_HFP_CB_AUDIO_DISCONNECTED: {
+      BTIF_TRACE_DEBUG("%s: Moving the audio_state to DISCONNECTED for device %s",
                 __FUNCTION__, btif_hf_cb[idx].connected_bda.ToString().c_str());
-      btif_hf_cb[idx].audio_state = BTHF_AUDIO_STATE_CONNECTING;
-      HAL_HF_CBACK(bt_hf_callbacks, AudioStateCallback, BTHF_AUDIO_STATE_CONNECTING,
+      btif_hf_cb[idx].audio_state = BTHF_AUDIO_STATE_DISCONNECTED;
+      HAL_HF_CBACK(bt_hf_callbacks, AudioStateCallback, BTHF_AUDIO_STATE_DISCONNECTED,
               &btif_hf_cb[idx].connected_bda);
     } break;
     default: {
@@ -978,8 +1000,8 @@ class HeadsetInterface : Interface {
                            RawAddress* bd_addr) override;
   bt_status_t PhoneStateChange(int num_active, int num_held,
                                bthf_call_state_t call_setup_state,
-                               const char* number,
-                               bthf_call_addrtype_t type, RawAddress* bd_addr) override;
+                               const char* number, bthf_call_addrtype_t type,
+                               const char* name, RawAddress* bd_addr) override;
 
   void Cleanup() override;
   bt_status_t SetScoAllowed(bool value) override;
@@ -1011,9 +1033,6 @@ bt_status_t HeadsetInterface::Init(Callbacks* callbacks, int max_hf_clients,
       << BTA_AG_MAX_NUM_CLIENTS << " was given " << max_hf_clients;
 
   btif_max_hf_clients = max_hf_clients;
-
-  // let bta also know about the max hf clients
-  BTA_AgSetMaxHfClients(max_hf_clients);
 
   BTIF_TRACE_DEBUG(
       "%s: btif_hf_features=%zu, max_hf_clients=%d, inband_ringing_enabled=%d",
@@ -1153,7 +1172,7 @@ bt_status_t HeadsetInterface::ConnectAudio(RawAddress* bd_addr) {
 
   int idx = btif_hf_idx_by_bdaddr(bd_addr);
 
-  if ((idx < 0) || (idx >= BTIF_HF_NUM_CB)) {
+  if ((idx < 0) || (idx >= BTA_AG_MAX_NUM_CLIENTS)) {
     BTIF_TRACE_ERROR("%s: Invalid index %d", __func__, idx);
     return BT_STATUS_FAIL;
   }
@@ -1164,19 +1183,22 @@ bt_status_t HeadsetInterface::ConnectAudio(RawAddress* bd_addr) {
     return BT_STATUS_NOT_READY;
   }
 
+  /* Check if SCO is already connecting/connected for the same device*/
+  if (btif_hf_cb[idx].audio_state == BTHF_AUDIO_STATE_CONNECTING ||
+     btif_hf_cb[idx].audio_state == BTHF_AUDIO_STATE_CONNECTED) {
+    BTIF_TRACE_WARNING("%s: Ignore SCO connection as audio_state for device %s: is %d",
+    __func__, btif_hf_cb[idx].connected_bda.ToString().c_str(),
+    btif_hf_cb[idx].audio_state);
+    return BT_STATUS_SUCCESS;
+  }
+
   // if SCO is setting up, don't allow SCO connection
   for (int i = 0; i < btif_max_hf_clients; i++) {
     if (btif_hf_cb[i].audio_state == BTHF_AUDIO_STATE_CONNECTING) {
-       if (*bd_addr == btif_hf_cb[i].connected_bda) {
-          BTIF_TRACE_WARNING("%s: SCO setting up with same active device %s: ",
-           __func__, btif_hf_cb[i].connected_bda.ToString().c_str());
-          return BT_STATUS_SUCCESS;
-       } else {
-          BTIF_TRACE_ERROR("%s: SCO setting up with %s, not allowing SCO connection with %s",
-           __func__, btif_hf_cb[i].connected_bda.ToString().c_str(),
-          bd_addr->ToString().c_str());
-          return BT_STATUS_FAIL;
-       }
+      BTIF_TRACE_ERROR("%s: SCO setting up with %s, not allowing SCO connection with %s",
+      __func__, btif_hf_cb[i].connected_bda.ToString().c_str(),
+      bd_addr->ToString().c_str());
+      return BT_STATUS_FAIL;
     }
   }
 
@@ -1189,6 +1211,34 @@ bt_status_t HeadsetInterface::ConnectAudio(RawAddress* bd_addr) {
                << *bd_addr;
     return BT_STATUS_FAIL;
   }
+
+#if (TWS_AG_ENABLED == TRUE)
+  if (btif_is_tws_plus_device(bd_addr) &&
+      !btif_hf_check_twsp_state_for_sco(idx)) {
+    RawAddress peer_eb_addr;
+    int peer_idx;
+
+    BTIF_TRACE_DEBUG("%s: Not create SCO since earbud is not in ear",__FUNCTION__);
+    btif_tws_plus_get_peer_eb_addr(bd_addr, &peer_eb_addr);
+    peer_idx = btif_hf_idx_by_bdaddr(&peer_eb_addr);
+
+    if (peer_idx != BTIF_HF_INVALID_IDX && IsSlcConnected(&peer_eb_addr) &&
+        btif_hf_cb[peer_idx].twsp_state != TWSPLUS_EB_STATE_OUT_OF_EAR &&
+        btif_hf_cb[peer_idx].twsp_state != TWSPLUS_EB_STATE_INCASE) {
+      BTIF_TRACE_DEBUG("%s: Create SCO with the other earbud in ear", __FUNCTION__);
+      BTA_AgAudioOpen(btif_hf_cb[peer_idx].handle);
+
+#if (BT_IOT_LOGGING_ENABLED == TRUE)
+      if (btif_hf_cb[peer_idx].audio_state != BTHF_AUDIO_STATE_CONNECTING)
+        device_iot_config_addr_int_add_one(peer_eb_addr, IOT_CONF_KEY_HFP_SCO_CONN_COUNT);
+#endif
+
+      btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
+                            (char*)&peer_eb_addr, sizeof(RawAddress), NULL);
+    }
+    return BT_STATUS_FAIL;
+  }
+#endif
 
   if (idx != BTIF_HF_INVALID_IDX) {
     BTA_AgAudioOpen(btif_hf_cb[idx].handle);
@@ -1246,29 +1296,33 @@ bt_status_t HeadsetInterface::DisconnectAudio(RawAddress* bd_addr) {
  ******************************************************************************/
 bt_status_t HeadsetInterface::StartVoiceRecognition(RawAddress* bd_addr) {
     CHECK_BTHF_INIT();
-    bool is_success = FALSE;
-    for (int i = 0; i < btif_max_hf_clients; i++)
-    {
-        if (((btif_hf_cb[i].state == BTHF_CONNECTION_STATE_CONNECTED) ||
-                (btif_hf_cb[i].state == BTHF_CONNECTION_STATE_SLC_CONNECTED)) &&
-                btif_hf_cb[i].peer_feat & BTA_AG_PEER_FEAT_VREC)
-        {
-            tBTA_AG_RES_DATA ag_res;
-            memset(&ag_res, 0, sizeof(ag_res));
-            ag_res.state = 1;
-            BTA_AgResult (btif_hf_cb[i].handle, BTA_AG_BVRA_RES, &ag_res);
-            is_success = TRUE;
-        }
+    int idx = btif_hf_idx_by_bdaddr(bd_addr);
+
+    if ((idx < 0) || (idx >= BTA_AG_MAX_NUM_CLIENTS)) {
+      BTIF_TRACE_ERROR("%s: Invalid index %d", __func__, idx);
+      return BT_STATUS_FAIL;
+    }
+    if (!is_connected(bd_addr)) {
+      BTIF_TRACE_ERROR("%s: %s is not connected", __func__,
+                       bd_addr->ToString().c_str());
+      return BT_STATUS_NOT_READY;
+    }
+    if (!(btif_hf_cb[idx].peer_feat & BTA_AG_PEER_FEAT_VREC)) {
+      BTIF_TRACE_ERROR("%s: voice recognition not supported, features=0x%x",
+                       __func__, btif_hf_cb[idx].peer_feat);
+      return BT_STATUS_UNSUPPORTED;
     }
 
-    if (is_success)
-    {
-        return BT_STATUS_SUCCESS;
+    tBTA_AG_RES_DATA ag_res = {};
+    ag_res.state = true;
+    BTA_AgResult(btif_hf_cb[idx].handle, BTA_AG_BVRA_RES, &ag_res);
+
+#if (TWS_AG_ENABLED == TRUE)
+    if (btif_is_tws_plus_device(bd_addr)) {
+        btif_hf_twsp_send_bvra_update(idx, &ag_res);
     }
-    else
-    {
-        return BT_STATUS_NOT_READY;
-    }
+#endif
+    return BT_STATUS_SUCCESS;
 }
 
 
@@ -1283,29 +1337,34 @@ bt_status_t HeadsetInterface::StartVoiceRecognition(RawAddress* bd_addr) {
  ******************************************************************************/
 bt_status_t HeadsetInterface::StopVoiceRecognition(RawAddress* bd_addr) {
     CHECK_BTHF_INIT();
-    bool is_success = FALSE;
-    for (int i = 0; i < btif_max_hf_clients; i++)
-    {
-        if (((btif_hf_cb[i].state == BTHF_CONNECTION_STATE_CONNECTED) ||
-                (btif_hf_cb[i].state == BTHF_CONNECTION_STATE_SLC_CONNECTED)) &&
-                btif_hf_cb[i].peer_feat & BTA_AG_PEER_FEAT_VREC)
-        {
-            tBTA_AG_RES_DATA ag_res;
-            memset(&ag_res, 0, sizeof(ag_res));
-            ag_res.state = 0;
-            BTA_AgResult (btif_hf_cb[i].handle, BTA_AG_BVRA_RES, &ag_res);
-            is_success = TRUE;
-        }
+
+    int idx = btif_hf_idx_by_bdaddr(bd_addr);
+
+    if ((idx < 0) || (idx >= BTA_AG_MAX_NUM_CLIENTS)) {
+      BTIF_TRACE_ERROR("%s: Invalid index %d", __func__, idx);
+      return BT_STATUS_FAIL;
+    }
+    if (!is_connected(bd_addr)) {
+      BTIF_TRACE_ERROR("%s: %s is not connected", __func__,
+                       bd_addr->ToString().c_str());
+      return BT_STATUS_NOT_READY;
+    }
+    if (!(btif_hf_cb[idx].peer_feat & BTA_AG_PEER_FEAT_VREC)) {
+      BTIF_TRACE_ERROR("%s: voice recognition not supported, features=0x%x",
+                       __func__, btif_hf_cb[idx].peer_feat);
+      return BT_STATUS_UNSUPPORTED;
     }
 
-    if (is_success)
-    {
-        return BT_STATUS_SUCCESS;
+    tBTA_AG_RES_DATA ag_res = {};
+    ag_res.state = false;
+    BTA_AgResult(btif_hf_cb[idx].handle, BTA_AG_BVRA_RES, &ag_res);
+
+#if (TWS_AG_ENABLED == TRUE)
+    if (btif_is_tws_plus_device(bd_addr)) {
+        btif_hf_twsp_send_bvra_update(idx, &ag_res);
     }
-    else
-    {
-        return BT_STATUS_NOT_READY;
-    }
+#endif
+    return BT_STATUS_SUCCESS;
 }
 
 
@@ -1337,19 +1396,8 @@ bt_status_t HeadsetInterface::VolumeControl(bthf_volume_type_t type, int volume,
         btif_hf_cb[idx].handle,
         (type == BTHF_VOLUME_TYPE_SPK) ? BTA_AG_SPK_RES : BTA_AG_MIC_RES,
         &ag_res);
-#if (TWS_AG_ENABLED == TRUE)
-    if (btif_is_tws_plus_device(bd_addr) && type == BTHF_VOLUME_TYPE_SPK) {
-        int other_idx = btif_hf_get_other_connected_index(idx);
-        if (other_idx != btif_max_hf_clients) {
-            BTA_AgResult(
-                btif_hf_cb[other_idx].handle,
-                BTA_AG_SPK_RES, &ag_res);
-        }
-    }
-#endif
     return BT_STATUS_SUCCESS;
   }
-
   return BT_STATUS_FAIL;
 }
 
@@ -1539,11 +1587,16 @@ bt_status_t HeadsetInterface::AtResponse(bthf_at_response_t response_code,
     send_at_result((response_code == BTHF_AT_RESPONSE_OK) ? BTA_AG_OK_DONE
                                                           : BTA_AG_OK_ERROR,
                    error_code, idx);
-    if (response_code == BTHF_AT_RESPONSE_OK && send_bvra_other_index)
-    {
-       send_bvra_update(idx);
-       send_bvra_other_index = FALSE;
+#if (TWS_AG_ENABLED == TRUE)
+    if (response_code == BTHF_AT_RESPONSE_OK && btif_twsp_send_bvra_update &&
+        btif_is_tws_plus_device(bd_addr)) {
+        tBTA_AG_RES_DATA ag_res;
+        memset(&ag_res, 0, sizeof(ag_res));
+        ag_res.state = btif_twsp_bvra_peer_eb_state;
+        btif_hf_twsp_send_bvra_update(idx, &ag_res);
+        btif_twsp_send_bvra_update = FALSE;
     }
+#endif
     return BT_STATUS_SUCCESS;
   }
 
@@ -1612,7 +1665,7 @@ bt_status_t HeadsetInterface::ClccResponse(int index, bthf_call_direction_t dir,
         snprintf(&ag_res.str[res_strlen], rem_bytes - 4, ",\"%s\"", dialnum);
         std::stringstream remaining_string;
         remaining_string << "," << type;
-        strlcat(&ag_res.str[res_strlen], remaining_string.str().c_str(), sizeof(ag_res.str));
+        strlcat(ag_res.str, remaining_string.str().c_str(), sizeof(ag_res.str));
         BTIF_TRACE_EVENT("clcc_response: The CLCC response is, ag_res.str: %s", ag_res.str);
       }
     }
@@ -1637,7 +1690,8 @@ bt_status_t HeadsetInterface::ClccResponse(int index, bthf_call_direction_t dir,
 
 bt_status_t HeadsetInterface::PhoneStateChange(
     int num_active, int num_held, bthf_call_state_t call_setup_state,
-    const char* number, bthf_call_addrtype_t type, RawAddress* bd_addr) {
+    const char* number, bthf_call_addrtype_t type, const char* name,
+    RawAddress* bd_addr) {
   CHECK_BTHF_INIT();
   if (!bd_addr) {
     BTIF_TRACE_WARNING("%s: bd_addr is null", __func__);
@@ -1727,12 +1781,18 @@ bt_status_t HeadsetInterface::PhoneStateChange(
     if (is_active_device(*bd_addr) && btif_hf_cb[idx].service_id == BTA_HFP_SERVICE_ID) {
        // initiate SCO only if it is not connected already
        if (btif_hf_cb[idx].audio_state != BTHF_AUDIO_STATE_CONNECTED) {
-           ag_res.audio_handle = control_block.handle;
-           BTIF_TRACE_DEBUG("%s: Moving the audio_state to CONNECTING for device %s",
-                  __FUNCTION__, bd_addr->ToString().c_str());
-           btif_hf_cb[idx].audio_state = BTHF_AUDIO_STATE_CONNECTING;
-           btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
+#if (TWS_AG_ENABLED == TRUE)
+           if (btif_is_tws_plus_device(bd_addr) &&
+               !btif_hf_check_twsp_state_for_sco(idx)) {
+               BTIF_TRACE_DEBUG("%s: Not create SCO since earbud is not in ear", __FUNCTION__);
+           } else {
+#endif
+               ag_res.audio_handle = control_block.handle;
+               btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
                                  (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+#if (TWS_AG_ENABLED == TRUE)
+           }
+#endif
        } else {
            BTIF_TRACE_IMP("%s: SCO is already connected with device %s, not intiating SCO",
             __func__, bd_addr->ToString().c_str());
@@ -1773,12 +1833,18 @@ bt_status_t HeadsetInterface::PhoneStateChange(
               if (is_active_device(*bd_addr)) {
                 // initiate SCO only if it is not connected already
                 if (btif_hf_cb[idx].audio_state != BTHF_AUDIO_STATE_CONNECTED) {
-                  ag_res.audio_handle = control_block.handle;
-                  BTIF_TRACE_DEBUG("%s: Moving the audio_state to CONNECTING for device %s",
-                         __FUNCTION__, bd_addr->ToString().c_str());
-                  control_block.audio_state = BTHF_AUDIO_STATE_CONNECTING;
-                  btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
-                               (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+#if (TWS_AG_ENABLED == TRUE)
+                  if (btif_is_tws_plus_device(bd_addr) &&
+                      !btif_hf_check_twsp_state_for_sco(idx)) {
+                    BTIF_TRACE_DEBUG("%s: Not create SCO since earbud is not in ear",__FUNCTION__);
+                  } else {
+#endif
+                    ag_res.audio_handle = control_block.handle;
+                    btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
+                                 (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+#if (TWS_AG_ENABLED == TRUE)
+                  }
+#endif
                 } else {
                   BTIF_TRACE_IMP("%s: SCO is already connected with device %s, not intiating SCO",
                          __func__, bd_addr->ToString().c_str());
@@ -1811,40 +1877,96 @@ bt_status_t HeadsetInterface::PhoneStateChange(
           res = BTA_AG_CALL_WAIT_RES;
         } else {
           res = BTA_AG_IN_CALL_RES;
-          if (is_active_device(*bd_addr) &&
-              (btif_hf_features & BTA_AG_FEAT_INBAND)) {
-            ag_res.audio_handle = control_block.handle;
+
+          if (btif_hf_features & BTA_AG_FEAT_INBAND) {
+            char value[PROPERTY_VALUE_MAX];
+
+            /* For PTS, don't send in-band ring if property is enabled */
+            if (property_get("vendor.bt.pts.certification", value, "false") &&
+                 strcmp(value, "true")) {
+              if (is_active_device(*bd_addr) &&
+                  get_connected_dev_count() == 1) {
+                BTIF_TRACE_IMP("%s, pts property is set to false, send BSIR 1", __func__);
+
+                SendBsir(1, bd_addr);
+                ag_res.audio_handle = control_block.handle;
+                btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
+                    (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+              }
+            } else {
+                BTIF_TRACE_IMP("%s, pts property is set to true, send BSIR 0", __func__);
+                SendBsir(0, bd_addr);
+            }
           }
         }
         if (number) {
-          int xx = 0;
-          if ((type == BTHF_CALL_ADDRTYPE_INTERNATIONAL) && (*number != '+'))
-            xx = snprintf(ag_res.str, sizeof(ag_res.str), "\"+%s\"", number);
-          else
-            xx = snprintf(ag_res.str, sizeof(ag_res.str), "\"%s\"", number);
-          ag_res.num = type;
-          // 5 = [,][3_digit_type][null_terminator]
-          if (xx > static_cast<int>(sizeof(ag_res.str) - 5)) {
-            android_errorWriteLog(0x534e4554, "79431031");
-            xx = sizeof(ag_res.str) - 5;
-            // Null terminating the string
-            memset(&ag_res.str[xx], 0, 5);
+          std::ostringstream call_number_stream;
+          if ((type == BTHF_CALL_ADDRTYPE_INTERNATIONAL) && (*number != '+')) {
+            call_number_stream << "\"+";
+          } else {
+            call_number_stream << "\"";
           }
 
-          if (res == BTA_AG_CALL_WAIT_RES)
-            snprintf(&ag_res.str[xx], sizeof(ag_res.str) - xx, ",%d", type);
+          std::string name_str;
+          if (name) {
+            name_str.append(name);
+          }
+          std::string number_str(number);
+          // 13 = ["][+]["][,][3_digit_type][,,,]["]["][null_terminator]
+          int overflow_size =
+              13 + static_cast<int>(number_str.length() + name_str.length()) -
+              static_cast<int>(sizeof(ag_res.str));
+          if (overflow_size > 0) {
+            android_errorWriteLog(0x534e4554, "79431031");
+            int extra_overflow_size =
+                overflow_size - static_cast<int>(name_str.length());
+            if (extra_overflow_size > 0) {
+              number_str.resize(number_str.length() - extra_overflow_size);
+              name_str.clear();
+            } else {
+              name_str.resize(name_str.length() - overflow_size);
+            }
+          }
+          call_number_stream << number_str << "\"";
+
+          // Store caller id string and append type info.
+          // Make sure type info is valid, otherwise add 129 as default type
+          ag_res.num = static_cast<uint16_t>(type);
+          if ((ag_res.num < BTA_AG_CLIP_TYPE_MIN) ||
+              (ag_res.num > BTA_AG_CLIP_TYPE_MAX)) {
+            if (ag_res.num != BTA_AG_CLIP_TYPE_VOIP) {
+              ag_res.num = BTA_AG_CLIP_TYPE_DEFAULT;
+            }
+          }
+
+          if (res == BTA_AG_CALL_WAIT_RES || name_str.empty()) {
+            call_number_stream << "," << std::to_string(ag_res.num);
+          } else {
+            call_number_stream << "," << std::to_string(ag_res.num) << ",,,\""
+                               << name_str << "\"";
+          }
+          snprintf(ag_res.str, sizeof(ag_res.str), "%s",
+                   call_number_stream.str().c_str());
+          BTIF_TRACE_EVENT("%s: The CLIP response is number: %s, name: %s, ag_res.str: %s",
+                            __func__ , number, name, ag_res.str);
         }
         break;
       case BTHF_CALL_STATE_DIALING:
         if (!(num_active + num_held) && is_active_device(*bd_addr))
         {
-          ag_res.audio_handle = control_block.handle;
+#if (TWS_AG_ENABLED == TRUE)
+          if (btif_is_tws_plus_device(bd_addr) &&
+              !btif_hf_check_twsp_state_for_sco(idx)) {
+            BTIF_TRACE_DEBUG("%s: Not create SCO since earbud is not in ear", __FUNCTION__);
+          } else {
+#endif
+            ag_res.audio_handle = control_block.handle;
 
-          BTIF_TRACE_DEBUG("%s: Moving the audio_state to CONNECTING for device %s",
-                     __FUNCTION__, bd_addr->ToString().c_str());
-          control_block.audio_state = BTHF_AUDIO_STATE_CONNECTING;
-          btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
-                                (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+            btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
+                                  (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+#if (TWS_AG_ENABLED == TRUE)
+          }
+#endif
         }
         else
         {
@@ -1853,17 +1975,24 @@ bt_status_t HeadsetInterface::PhoneStateChange(
         res = BTA_AG_OUT_CALL_ORIG_RES;
         break;
       case BTHF_CALL_STATE_ALERTING:
-        /* if we went from idle->alert, force SCO setup here. dialing usually
-         * triggers it */
+        /* if we went from idle->alert, force SCO setup here if SCO is not connected already.
+         * Dialing usually triggers it */
         if ((control_block.call_setup_state == BTHF_CALL_STATE_IDLE) &&
-            !(num_active + num_held) && is_active_device(*bd_addr)) {
-          ag_res.audio_handle = control_block.handle;
+            !(num_active + num_held) && is_active_device(*bd_addr) &&
+            (btif_hf_cb[idx].audio_state != BTHF_AUDIO_STATE_CONNECTED)) {
+#if (TWS_AG_ENABLED == TRUE)
+          if (btif_is_tws_plus_device(bd_addr) &&
+              !btif_hf_check_twsp_state_for_sco(idx)) {
+            BTIF_TRACE_DEBUG("%s: Not create SCO since earbud is not in ear", __FUNCTION__);
+          } else {
+#endif
+            ag_res.audio_handle = control_block.handle;
 
-          BTIF_TRACE_DEBUG("%s: Moving the audio_state to CONNECTING for device %s",
-                      __FUNCTION__, bd_addr->ToString().c_str());
-          control_block.audio_state = BTHF_AUDIO_STATE_CONNECTING;
-          btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
-                                (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+            btif_transfer_context(btif_in_hf_generic_evt, BTIF_HFP_CB_AUDIO_CONNECTING,
+                                  (char*)(&btif_hf_cb[idx].connected_bda), sizeof(RawAddress), NULL);
+#if (TWS_AG_ENABLED == TRUE)
+          }
+#endif
         }
         else
         {
@@ -2010,98 +2139,6 @@ void HeadsetInterface::Cleanup(void) {
 #endif
 }
 
-/*******************************************************************************
- *
- * Function         configure_wbs
- *
- * Description      set to over-ride the current WBS configuration.
- *                  It will not send codec setting cmd to the controller now.
- *                  It just change the configure.
- *
- * Returns          bt_status_t
- *
- ******************************************************************************/
-/*static bt_status_t configure_wbs(RawAddress* bd_addr,
-                                 bthf_wbs_config_t config) {
-  CHECK_BTHF_INIT();
-
-  int idx = btif_hf_idx_by_bdaddr(bd_addr);
-
-  if ((idx < 0) || (idx >= BTA_AG_MAX_NUM_CLIENTS)) {
-    BTIF_TRACE_ERROR("%s: Invalid index %d", __func__, idx);
-    return BT_STATUS_FAIL;
-  }
-
-  BTIF_TRACE_EVENT("%s config is %d", __func__, config);
-  if (config == BTHF_WBS_YES)
-    BTA_AgSetCodec(btif_hf_cb[idx].handle, BTA_AG_CODEC_MSBC);
-  else if (config == BTHF_WBS_NO)
-    BTA_AgSetCodec(btif_hf_cb[idx].handle, BTA_AG_CODEC_CVSD);
-  else
-    BTA_AgSetCodec(btif_hf_cb[idx].handle, BTA_AG_CODEC_NONE);
-
-  return BT_STATUS_SUCCESS;
-} */ // commenting temp because of HAL change
-
-#ifdef BT_HF_VOIP_FEATURE //gghai
-static void set_voip_network_type_wifi_hci_cmd_complete(tBTM_VSC_CMPL* p_data)
-{
-    uint8_t         *stream,  status, subcmd;
-    uint16_t        opcode, length;
-
-    if (p_data && (stream = (uint8_t*)p_data->p_param_buf))
-    {
-        opcode = p_data->opcode;
-        length = p_data->param_len;
-        STREAM_TO_UINT8(status, stream);
-        STREAM_TO_UINT8(subcmd, stream);
-        BTIF_TRACE_DEBUG("%s opcode = 0x%04X, length = %d, status = %d, subcmd = %d",
-                __FUNCTION__, opcode, length, status, subcmd);
-        if (status == HCI_SUCCESS)
-        {
-            BTIF_TRACE_DEBUG("btm_SetVoipNetworkTypeWifi status success");
-        }
-    }
-}
-
-/*
-/*******************************************************************************
-**
-** Function         voip_network_type_wifi
-**
-** Description      BT app updates the connectivity network used for VOIP as Wifi
-**
-** Returns          bt_status_t
-**
-*******************************************************************************/
-static bt_status_t voip_network_type_wifi(bthf_voip_state_t isVoipStarted,
-                                           bthf_voip_call_network_type_t isNetworkWifi)
-{
-    uint8_t           cmd[3], *p_cursor;
-    uint8_t           sub_cmd = HCI_VSC_SUBCODE_VOIP_NETWORK_WIFI;
-    int             idx = btif_hf_latest_connected_idx();
-
-    CHECK_BTHF_INIT();
-
-    if ((idx < 0) || (idx >= BTA_AG_MAX_NUM_CLIENTS))
-    {
-        BTIF_TRACE_ERROR("%s: Invalid index %d", __FUNCTION__, idx);
-        return BT_STATUS_FAIL;
-    }
-
-    p_cursor = cmd;
-    memset(cmd, 0, 3);
-
-    *p_cursor++ = sub_cmd;
-    *p_cursor++ = isVoipStarted;
-    *p_cursor++ = isNetworkWifi;
-
-    BTM_VendorSpecificCommand(HCI_VSC_VOIP_NETWORK_WIFI_OCF, sizeof(cmd),
-            cmd, set_voip_network_type_wifi_hci_cmd_complete);
-    return BT_STATUS_SUCCESS;
-}
-#endif
-
 bt_status_t HeadsetInterface::SendBsir(bool value, RawAddress* bd_addr) {
   CHECK_BTHF_INIT();
   int idx = btif_hf_idx_by_bdaddr(bd_addr);
@@ -2194,9 +2231,9 @@ bt_status_t btif_hf_execute_service(bool b_enable) {
             btif_hf_features |= BTA_AG_FEAT_CODEC;
     }
 
-    for (i = 0; i < btif_max_hf_clients; i++) {
+    for (uint8_t app_id = 0; app_id < btif_max_hf_clients; app_id++) {
       BTA_AgRegister(BTIF_HF_SERVICES, BTIF_HF_SECURITY, btif_hf_features,
-                     p_service_names, bthf_hf_id[i]);
+                     p_service_names, app_id);
     }
   } else {
     if (bt_hf_callbacks)

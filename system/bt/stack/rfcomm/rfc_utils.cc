@@ -110,6 +110,7 @@ uint8_t rfc_calc_fcs(uint16_t len, uint8_t* p) {
  ******************************************************************************/
 bool rfc_check_fcs(uint16_t len, uint8_t* p, uint8_t received_fcs) {
   uint8_t fcs = 0xFF;
+  bool status = false;
 
   while (len--) {
     fcs = rfc_crctable[fcs ^ *p++];
@@ -119,7 +120,13 @@ bool rfc_check_fcs(uint16_t len, uint8_t* p, uint8_t received_fcs) {
   fcs = rfc_crctable[fcs ^ received_fcs];
 
   /*0xCF is the reversed order of 11110011.*/
-  return (fcs == 0xCF);
+
+  if (fcs == 0xCF) {
+    status = true;
+  } else {
+    RFCOMM_TRACE_ERROR("%s: fcs failed", __func__);
+  }
+  return status;
 }
 
 /*******************************************************************************

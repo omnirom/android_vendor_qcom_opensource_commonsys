@@ -46,8 +46,6 @@ public abstract class BluetoothMapCommonUtils {
 
     protected static String TAG = "BluetoothMapCommonUtils";
 
-    static final String EMAIL_UI_PKG = "com.android.email";
-
     public static class BMsgReaderExt extends BluetoothMapbMessage.BMsgReader{
 
         public BMsgReaderExt(InputStream is)

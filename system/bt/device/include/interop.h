@@ -22,6 +22,8 @@
 
 #include "raw_address.h"
 
+#include "osi/include/list.h"
+
 static const char INTEROP_MODULE[] = "interop_module";
 
 // NOTE:
@@ -206,17 +208,30 @@ typedef enum {
   //is used avoid collision.
   INTEROP_AVRCP_BROWSE_OPEN_CHANNEL_COLLISION,
 
-  // Enable power level 10 adaptive control in FW side for remote devices
-  // in this whitelist item.
-  INTEROP_ENABLE_PL10_ADAPTIVE_CONTROL,
-
   //Some remote devices don't support sniff mode when the SCO is connected.
   //For such devices, disable sniff mode after SCO is connected and make
   //the link as active.
   INTEROP_DISABLE_SNIFF_LINK_DURING_SCO,
 
+  // Enable power level 10 adaptive control in FW side for remote devices
+  // in this whitelist item.
+  INTEROP_ENABLE_PL10_ADAPTIVE_CONTROL,
+
   //For some remote devicea, disable sniff mode during the call
   INTEROP_DISABLE_SNIFF_DURING_CALL,
+
+  // Set a very low initial sniff subrating for HID devices that do not
+  // set their own sniff interval.
+  INTEROP_HID_HOST_LIMIT_SNIFF_INTERVAL,
+
+  // Disable LPA enhanced power control
+  INTEROP_DISABLE_LPA_ENHANCED_POWER_CONTROL,
+
+  // Disable refresh_accept_signalling_timer
+  INTEROP_DISABLE_REFRESH_ACCPET_SIG_TIMER,
+
+  //list of whitelisted media players
+  INTEROP_BROWSE_PLAYER_WHITE_LIST,
 
   END_OF_INTEROP_LIST
 } interop_feature_t;
@@ -266,6 +281,8 @@ void interop_database_add(const uint16_t feature, const RawAddress* addr,
 // Clear the dynamic portion of the interoperability workaround database.
 void interop_database_clear(void);
 
+//check if device version is matching with the interop database
+bool interop_database_match_version(const interop_feature_t feature, uint16_t version);
 // Check if a given |addr| matches a known interoperability workaround as identified
 // by the |interop_feature_t| enum. This API is used for simple address
 // based lookups where more information is not available. No look-ups or random
@@ -273,3 +290,8 @@ void interop_database_clear(void);
 // max latency for SSR stored for particular remote device is returned.
 bool interop_match_addr_get_max_lat(const interop_feature_t feature,
         const RawAddress* addr, uint16_t *max_lat);
+
+// This API is used for name based lookups for whitelisted media players.
+// If whitelisted media players list found it will assign the media players list
+// pointer to the argument passed and  return true else return false.
+bool interop_get_whitelisted_media_players_list(list_t** p_bl_devices);

@@ -35,7 +35,6 @@
 #include "bt_utils.h"
 #include "osi/include/log.h"
 #include "osi/include/osi.h"
-#include <hardware/bt_av.h>
 
 // data type for the aptX Codec Information Element */
 typedef struct {
@@ -53,16 +52,6 @@ static const tA2DP_APTX_CIE a2dp_aptx_src_caps = {
     A2DP_APTX_VENDOR_ID,                                       /* vendorId */
     A2DP_APTX_CODEC_ID_BLUETOOTH,                              /* codecId */
     A2DP_APTX_SAMPLERATE_44100,                                /* sampleRate */
-    A2DP_APTX_CHANNELS_STEREO,                                 /* channelMode */
-    A2DP_APTX_FUTURE_1,                                        /* future1 */
-    A2DP_APTX_FUTURE_2,                                        /* future2 */
-    BTAV_A2DP_CODEC_BITS_PER_SAMPLE_16                         /* bits_per_sample */
-};
-/* aptX Sink codec capabilities */
-static const tA2DP_APTX_CIE a2dp_aptx_sink_caps = {
-    A2DP_APTX_VENDOR_ID,                                       /* vendorId */
-    A2DP_APTX_CODEC_ID_BLUETOOTH,                              /* codecId */
-    A2DP_APTX_SAMPLERATE_44100|A2DP_APTX_SAMPLERATE_48000,     /* sampleRate */
     A2DP_APTX_CHANNELS_STEREO,                                 /* channelMode */
     A2DP_APTX_FUTURE_1,                                        /* future1 */
     A2DP_APTX_FUTURE_2,                                        /* future2 */
@@ -87,16 +76,6 @@ static const tA2DP_APTX_CIE a2dp_aptx_src_default_config = {
     A2DP_APTX_FUTURE_1,                /* future1 */
     A2DP_APTX_FUTURE_2,                /* future2 */
     BTAV_A2DP_CODEC_BITS_PER_SAMPLE_16 /* bits_per_sample */
-};
-/* aptX Sink codec capabilities */
-static const tA2DP_APTX_CIE a2dp_aptx_sink_default_config = {
-    A2DP_APTX_VENDOR_ID,                                       /* vendorId */
-    A2DP_APTX_CODEC_ID_BLUETOOTH,                              /* codecId */
-    A2DP_APTX_SAMPLERATE_48000,                                /* sampleRate */
-    A2DP_APTX_CHANNELS_STEREO,                                 /* channelMode */
-    A2DP_APTX_FUTURE_1,                                        /* future1 */
-    A2DP_APTX_FUTURE_2,                                        /* future2 */
-    BTAV_A2DP_CODEC_BITS_PER_SAMPLE_16                         /* bits_per_sample */
 };
 /* Default aptX offload codec configuration */
 static const tA2DP_APTX_CIE a2dp_aptx_offload_default_config = {
@@ -221,22 +200,6 @@ bool A2DP_IsVendorPeerSinkCodecValidAptx(const uint8_t* p_codec_info) {
          (A2DP_ParseInfoAptx(&cfg_cie, p_codec_info, true) == A2DP_SUCCESS);
 }
 
-bool A2DP_IsVendorSinkCodecValidAptx(const uint8_t* p_codec_info) {
-  tA2DP_APTX_CIE cfg_cie;
-
-  /* Use a liberal check when parsing the codec info */
-  return (A2DP_ParseInfoAptx(&cfg_cie, p_codec_info, false) == A2DP_SUCCESS) ||
-         (A2DP_ParseInfoAptx(&cfg_cie, p_codec_info, true) == A2DP_SUCCESS);
-}
-
-bool A2DP_IsVendorPeerSourceCodecValidAptx(const uint8_t* p_codec_info) {
-  tA2DP_APTX_CIE cfg_cie;
-
-  /* Use a liberal check when parsing the codec info */
-  return (A2DP_ParseInfoAptx(&cfg_cie, p_codec_info, false) == A2DP_SUCCESS) ||
-         (A2DP_ParseInfoAptx(&cfg_cie, p_codec_info, true) == A2DP_SUCCESS);
-}
-
 // Checks whether A2DP aptX codec configuration matches with a device's codec
 // capabilities. |p_cap| is the aptX codec configuration. |p_codec_info| is
 // the device's codec capabilities.
@@ -288,44 +251,6 @@ bool A2DP_VendorUsesRtpHeaderAptx(UNUSED_ATTR bool content_protection_enabled,
 const char* A2DP_VendorCodecNameAptx(UNUSED_ATTR const uint8_t* p_codec_info) {
   return "aptX";
 }
-
-bool A2DP_IsVendorPeerSourceCodecSupportedAptx(
-    UNUSED_ATTR const uint8_t* p_codec_info) {
-      return A2DP_CodecInfoMatchesCapabilityAptx(&a2dp_aptx_sink_caps, p_codec_info,
-                                            true) == A2DP_SUCCESS;
-}
-
-tA2DP_STATUS A2DP_BuildSrc2SinkConfigAptx(UNUSED_ATTR const uint8_t* p_src_cap,
-                                         UNUSED_ATTR uint8_t* p_pref_cfg) {
-  tA2DP_APTX_CIE src_cap;
-  tA2DP_APTX_CIE pref_cap;
-
-  /* initialize it to default APTX configuration */
-  A2DP_BuildInfoAptx(AVDT_MEDIA_TYPE_AUDIO, &a2dp_aptx_sink_default_config,
-                    p_pref_cfg);
-
-  /* now try to build a preferred one. parse configuration */
-  tA2DP_STATUS status = A2DP_ParseInfoAptx(&src_cap, p_src_cap, true);
-  if (status != A2DP_SUCCESS) {
-    LOG_ERROR(LOG_TAG, "%s: can't parse src cap ret = %d", __func__, status);
-    return A2DP_FAIL;
-  }
-
-  if (src_cap.sampleRate & A2DP_APTX_SAMPLERATE_48000)
-    pref_cap.sampleRate = A2DP_APTX_SAMPLERATE_48000;
-  else if (src_cap.sampleRate & A2DP_APTX_SAMPLERATE_44100)
-    pref_cap.sampleRate = A2DP_APTX_SAMPLERATE_44100;
-
-  if (src_cap.channelMode & A2DP_APTX_CHANNELS_STEREO)
-    pref_cap.channelMode = A2DP_APTX_CHANNELS_STEREO;
-  else if (src_cap.channelMode & A2DP_APTX_CHANNELS_MONO)
-    pref_cap.channelMode = A2DP_APTX_CHANNELS_MONO;
-
-  A2DP_BuildInfoAptx(AVDT_MEDIA_TYPE_AUDIO, &pref_cap, p_pref_cfg);
-
-  return A2DP_SUCCESS;
-}
-
 
 bool A2DP_VendorCodecTypeEqualsAptx(const uint8_t* p_codec_info_a,
                                     const uint8_t* p_codec_info_b) {
@@ -412,28 +337,6 @@ int A2DP_VendorGetTrackChannelCountAptx(const uint8_t* p_codec_info) {
   return -1;
 }
 
-int A2DP_VendorGetTrackChannelTypeAptx(const uint8_t* p_codec_info) {
-  tA2DP_APTX_CIE aptx_cie;
-
-  // Check whether the codec info contains valid data
-  tA2DP_STATUS a2dp_status = A2DP_ParseInfoAptx(&aptx_cie, p_codec_info, false);
-  if (a2dp_status != A2DP_SUCCESS) {
-    LOG_ERROR(LOG_TAG, "%s: cannot decode codec information: %d", __func__,
-              a2dp_status);
-    return -1;
-  }
-
-  switch (aptx_cie.channelMode) {
-    case A2DP_APTX_CHANNELS_MONO:
-      return 1;
-    case A2DP_APTX_CHANNELS_STEREO:
-      return 3;
-  }
-
-  return -1;
-}
-
-
 bool A2DP_VendorGetPacketTimestampAptx(UNUSED_ATTR const uint8_t* p_codec_info,
                                        const uint8_t* p_data,
                                        uint32_t* p_timestamp) {
@@ -502,41 +405,15 @@ btav_a2dp_codec_index_t A2DP_VendorSourceCodecIndexAptx(
   return BTAV_A2DP_CODEC_INDEX_SOURCE_APTX;
 }
 
-btav_a2dp_codec_index_t A2DP_VendorSinkCodecIndexAptx(
-    UNUSED_ATTR const uint8_t* p_codec_info) {
-  return BTAV_A2DP_CODEC_INDEX_SINK_APTX;
-}
-
 const char* A2DP_VendorCodecIndexStrAptx(void) { return "aptX"; }
 
-const char* A2DP_VendorCodecIndexStrAptxSink(void) { return "aptX sink"; }
-
 bool A2DP_VendorInitCodecConfigAptx(tAVDT_CFG* p_cfg) {
-  if (A2DP_GetOffloadStatus()) {
-    if (!A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX)) {
-      LOG_ERROR(LOG_TAG, "%s: APTX disabled in offload mode", __func__);
-      return false;
-    }
-  }
-  if (A2DP_BuildInfoAptx(AVDT_MEDIA_TYPE_AUDIO, &a2dp_aptx_caps,
-                         p_cfg->codec_info) != A2DP_SUCCESS) {
+  if (!A2DP_IsCodecEnabled(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX)) {
+    LOG_ERROR(LOG_TAG, "%s: APTX disabled in both SW and HW mode", __func__);
     return false;
   }
 
-#if (BTA_AV_CO_CP_SCMS_T == TRUE)
-  /* Content protection info - support SCMS-T */
-  uint8_t* p = p_cfg->protect_info;
-  *p++ = AVDT_CP_LOSC;
-  UINT16_TO_STREAM(p, AVDT_CP_SCMS_T_ID);
-  p_cfg->num_protect = 1;
-#endif
-
-  return true;
-}
-
-bool A2DP_VendorInitCodecConfigAptxSink(tAVDT_CFG* p_cfg) {
-  LOG_DEBUG(LOG_TAG, "%s:", __func__);
-  if (A2DP_BuildInfoAptx(AVDT_MEDIA_TYPE_AUDIO, &a2dp_aptx_sink_caps,
+  if (A2DP_BuildInfoAptx(AVDT_MEDIA_TYPE_AUDIO, &a2dp_aptx_caps,
                          p_cfg->codec_info) != A2DP_SUCCESS) {
     return false;
   }
@@ -557,8 +434,8 @@ A2dpCodecConfigAptx::A2dpCodecConfigAptx(
     : A2dpCodecConfig(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX, "aptX",
                       codec_priority) {
   // Compute the local capability
-    if (A2DP_GetOffloadStatus() && !(A2DP_IsScramblingSupported() ||
-                                     A2DP_Is44p1kFreqSupported())) {
+    if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX)&&
+      !(A2DP_IsScramblingSupported() || A2DP_Is44p1kFreqSupported())) {
       a2dp_aptx_caps = a2dp_aptx_offload_caps;
       a2dp_aptx_default_config = a2dp_aptx_offload_default_config;
     } else {
@@ -585,15 +462,16 @@ A2dpCodecConfigAptx::~A2dpCodecConfigAptx() {}
 bool A2dpCodecConfigAptx::init() {
   if (!isValid()) return false;
 
-  if (A2DP_GetOffloadStatus()) {
-    if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX)) {
-      LOG_ERROR(LOG_TAG, "%s: APTX enabled in offload mode", __func__);
-      return true;
-    } else {
-      LOG_ERROR(LOG_TAG, "%s: APTX disabled in offload mode", __func__);
-      return false;
-    }
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX)) {
+    LOG_DEBUG(LOG_TAG, "%s: APTX enabled in HW mode", __func__);
+    return true;
+  } else if(!A2DP_IsCodecEnabledInSoftware(BTAV_A2DP_CODEC_INDEX_SOURCE_APTX)){
+    LOG_DEBUG(LOG_TAG, "%s: APTX disabled in both SW and HW mode", __func__);
+    return false;
+  } else {
+    LOG_DEBUG(LOG_TAG, "%s: APTX enabled in SW mode", __func__);
   }
+
   // Load the encoder
   if (!A2DP_VendorLoadEncoderAptx()) {
     LOG_ERROR(LOG_TAG, "%s: cannot load the encoder", __func__);
@@ -1041,43 +919,5 @@ fail:
          sizeof(ota_codec_peer_capability_));
   memcpy(ota_codec_peer_config_, saved_ota_codec_peer_config,
          sizeof(ota_codec_peer_config_));
-  return false;
-}
-
-A2dpCodecConfigAptxSink::A2dpCodecConfigAptxSink(
-    btav_a2dp_codec_priority_t codec_priority)
-    : A2dpCodecConfig(BTAV_A2DP_CODEC_INDEX_SINK_APTX, "aptX sink",
-                      codec_priority) {
-// TODO: This method applies only to Source codecs
-}
-
-A2dpCodecConfigAptxSink::~A2dpCodecConfigAptxSink() {}
-
-bool A2dpCodecConfigAptxSink::init() {
-  if (!isValid()) return false;
-
-  return true;
-}
-
-bool A2dpCodecConfigAptxSink::useRtpHeaderMarkerBit() const { return false; }
-
-bool A2dpCodecConfigAptxSink::updateEncoderUserConfig(
-    UNUSED_ATTR const tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params,
-    UNUSED_ATTR bool* p_restart_input, UNUSED_ATTR bool* p_restart_output,
-    UNUSED_ATTR bool* p_config_updated) {
-  // TODO: This method applies only to Source codecs
-  return false;
-}
-
-period_ms_t A2dpCodecConfigAptxSink::encoderIntervalMs() const {
-  // TODO: This method applies only to Source codecs
-  return 0;
-}
-
-bool A2dpCodecConfigAptxSink::setCodecConfig(
-    UNUSED_ATTR const uint8_t* p_peer_codec_info,
-    UNUSED_ATTR bool is_capability,
-    UNUSED_ATTR uint8_t* p_result_codec_config) {
-  // TODO: This method applies only to Source codecs
   return false;
 }

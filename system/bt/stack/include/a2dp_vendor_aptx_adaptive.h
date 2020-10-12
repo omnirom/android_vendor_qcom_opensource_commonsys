@@ -65,6 +65,42 @@ class A2dpCodecConfigAptxAdaptive: public A2dpCodecConfig {
   void debug_codec_dump(int fd) override;
 };
 
+// data type for the aptX-adaptive Codec Information Element */
+
+typedef struct {
+  uint8_t ttp_ll_0;
+  uint8_t ttp_ll_1;
+  uint8_t ttp_hq_0;
+  uint8_t ttp_hq_1;
+  uint8_t ttp_tws_0;
+  uint8_t ttp_tws_1;
+  uint8_t reserved_15thbyte;
+
+  //Below are the additions for R2
+  uint8_t cap_ext_ver_num;             //capability extension ver number
+  uint32_t aptx_adaptive_sup_features; //aptx-adaptive supported features
+  uint8_t first_setup_pref;            //first setup preference
+  uint8_t second_setup_pref;           //second setup preference
+  uint8_t third_setup_pref;            //third setup preference
+  uint8_t fourth_setup_pref;           //fourth setup preference
+  uint8_t eoc0;                        //no further expansion
+  uint8_t eoc1;                        //capability extension end
+} tA2DP_APTX_ADAPTIVE_VENDOR_DATA;
+// This is due to be updated
+typedef struct {
+  uint32_t vendorId;
+  uint16_t codecId;    /* Codec ID for aptX-adaptive */
+  uint8_t sampleRate;  /* Sampling Frequency */
+  uint8_t sourceType;  /* AVRCP CUSTOM, Q2Q OR NQ2Q, RESERVED */
+  uint8_t channelMode;
+  tA2DP_APTX_ADAPTIVE_VENDOR_DATA aptx_data;
+  btav_a2dp_codec_bits_per_sample_t bits_per_sample;
+  uint8_t reserved_data[A2DP_APTX_ADAPTIVE_RESERVED_DATA];  // reserved for future exp
+} tA2DP_APTX_ADAPTIVE_CIE;
+// parses the given codec info and copies the needed info
+// to Codec Information Element and returns same CIE.
+bool A2DP_GetAptxAdaptiveCIE(const uint8_t* p_codec_info,
+                        tA2DP_APTX_ADAPTIVE_CIE *cfg_cie);
 // Checks whether the codec capabilities contain a valid A2DP aptX-adaptive Source
 // codec.
 // NOTE: only codecs that are implemented are considered valid.

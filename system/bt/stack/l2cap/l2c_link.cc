@@ -43,7 +43,9 @@
 #include "l2cdefs.h"
 #include "osi/include/osi.h"
 #include "device/include/device_iot_config.h"
+#include "btif/include/btif_av.h"
 
+extern bool btif_av_is_split_a2dp_enabled(void);
 static bool l2c_link_send_to_lower(tL2C_LCB* p_lcb, BT_HDR* p_buf,
                                    tL2C_TX_COMPLETE_CB_INFO* p_cbi);
 
@@ -92,8 +94,14 @@ bool l2c_link_hci_conn_req(const RawAddress& bd_addr) {
       }
     }
 
-    if (no_links)
-      p_lcb->link_role = L2CAP_DESIRED_LINK_ROLE;
+    if (no_links) {
+      if (BTM_SecIsTwsPlusDev(bd_addr)) {
+        p_lcb->link_role = HCI_ROLE_MASTER;
+        L2CAP_TRACE_WARNING ("l2c_link_hci_conn_req:Tws device:link_role= %d",p_lcb->link_role);
+      } else {
+        p_lcb->link_role = L2CAP_DESIRED_LINK_ROLE;
+      }
+    }
 
     if ((p_lcb->link_role == BTM_ROLE_MASTER)&&(interop_match_addr_or_name(INTEROP_DISABLE_ROLE_SWITCH, &bd_addr))) {
       p_lcb->link_role = BTM_ROLE_SLAVE;
@@ -118,15 +126,18 @@ bool l2c_link_hci_conn_req(const RawAddress& bd_addr) {
       (p_lcb->link_state == LST_CONNECT_HOLDING)) {
     /* Connection collision. Accept the connection anyways. */
 
-    if (!btm_dev_support_switch(bd_addr))
+    if (!btm_dev_support_switch(bd_addr)) {
       p_lcb->link_role = HCI_ROLE_SLAVE;
-    else
+    } else if (BTM_SecIsTwsPlusDev(bd_addr)) {
+      p_lcb->link_role = HCI_ROLE_MASTER;
+    } else {
       p_lcb->link_role = l2cu_get_conn_role(p_lcb);
+    }
 
     if ((p_lcb->link_role == BTM_ROLE_MASTER)&&(interop_match_addr_or_name(INTEROP_DISABLE_ROLE_SWITCH, &bd_addr))) {
       p_lcb->link_role = BTM_ROLE_SLAVE;
-      L2CAP_TRACE_WARNING ("l2c_link_hci_conn_req:set link_role= %d",p_lcb->link_role);
     }
+    L2CAP_TRACE_WARNING ("l2c_link_hci_conn_req:set link_role= %d",p_lcb->link_role);
     btsnd_hcic_accept_conn(bd_addr, p_lcb->link_role);
 
     p_lcb->link_state = LST_CONNECTING;
@@ -300,7 +311,8 @@ void l2c_link_sec_comp2(const RawAddress& p_bda,
   tL2C_CCB* p_next_ccb;
   uint8_t event;
 
-  L2CAP_TRACE_DEBUG("l2c_link_sec_comp: %d, 0x%x", status, p_ref_data);
+  L2CAP_TRACE_DEBUG("%s: status=%d, p_ref_data=%p, BD_ADDR=%s", __func__,
+                    status, p_ref_data, p_bda.ToString().c_str());
 
   if (status == BTM_SUCCESS_NO_SECURITY) status = BTM_SUCCESS;
 
@@ -451,7 +463,6 @@ bool l2c_link_hci_disc_comp(uint16_t handle, uint8_t reason) {
       /* for LE link, always drop and re-open to ensure to get LE remote feature
        */
       if (p_lcb->transport == BT_TRANSPORT_LE) {
-        l2cb.is_ble_connecting = false;
         btm_acl_removed(p_lcb->remote_bd_addr, p_lcb->transport);
         /* Release any held buffers */
         BT_HDR* p_buf;
@@ -594,9 +605,7 @@ void l2c_link_timeout(tL2C_LCB* p_lcb) {
 
       p_ccb = pn;
     }
-    if (p_lcb->link_state == LST_CONNECTING && l2cb.is_ble_connecting == true) {
-      L2CA_CancelBleConnectReq(l2cb.ble_connecting_bda);
-    }
+
     /* Release the LCB */
     l2cu_release_lcb(p_lcb);
   }
@@ -738,8 +747,10 @@ void l2c_link_adjust_allocation(void) {
   uint16_t hi_quota, low_quota;
   uint16_t num_lowpri_links = 0;
   uint16_t num_hipri_links = 0;
-  uint16_t controller_xmit_quota = l2cb.num_lm_acl_bufs;
-  uint16_t high_pri_link_quota = L2CAP_HIGH_PRI_MIN_XMIT_QUOTA_A;
+  uint16_t controller_xmit_quota;
+  uint16_t high_pri_link_quota = controller_xmit_quota = l2cb.num_lm_acl_bufs;
+  bool is_share_buffer =
+      (l2cb.num_lm_ble_bufs == L2C_DEF_NUM_BLE_BUF_SHARED) ? true : false;
 
   /* If no links active, reset buffer quotas and controller buffers */
   if (l2cb.num_links_active == 0) {
@@ -750,12 +761,17 @@ void l2c_link_adjust_allocation(void) {
 
   /* First, count the links */
   for (yy = 0, p_lcb = &l2cb.lcb_pool[0]; yy < MAX_L2CAP_LINKS; yy++, p_lcb++) {
-    if (p_lcb->in_use) {
+    if (p_lcb->in_use &&
+        (is_share_buffer || p_lcb->transport != BT_TRANSPORT_LE)) {
       if (p_lcb->acl_priority == L2CAP_PRIORITY_HIGH)
         num_hipri_links++;
       else
         num_lowpri_links++;
     }
+  }
+
+  if ((l2cb.num_links_active > 1) ||(btif_av_is_split_a2dp_enabled())) {
+    high_pri_link_quota = L2CAP_HIGH_PRI_MIN_XMIT_QUOTA_A;
   }
 
   /* now adjust high priority link quota */
@@ -803,7 +819,8 @@ void l2c_link_adjust_allocation(void) {
 
   /* Now, assign the quotas to each link */
   for (yy = 0, p_lcb = &l2cb.lcb_pool[0]; yy < MAX_L2CAP_LINKS; yy++, p_lcb++) {
-    if (p_lcb->in_use) {
+    if (p_lcb->in_use &&
+        (is_share_buffer || p_lcb->transport != BT_TRANSPORT_LE)) {
       if (p_lcb->acl_priority == L2CAP_PRIORITY_HIGH) {
         p_lcb->link_xmit_quota = high_pri_link_quota;
       } else {
@@ -1292,6 +1309,8 @@ void l2c_link_process_num_completed_pkts(uint8_t* p) {
 
   for (xx = 0; xx < num_handles; xx++) {
     STREAM_TO_UINT16(handle, p);
+    /* Extract the handle */
+    handle = HCID_GET_HANDLE(handle);
     STREAM_TO_UINT16(num_sent, p);
 
     p_lcb = l2cu_find_lcb_by_handle(handle);

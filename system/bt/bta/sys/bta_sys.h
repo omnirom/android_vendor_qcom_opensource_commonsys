@@ -92,7 +92,7 @@ typedef uint16_t tBTA_SYS_HW_MODULE;
 #define BTA_ID_MCE 29           /* Message Client Equipment */
 #define BTA_ID_HL 30            /* Health Device Profile*/
 #define BTA_ID_GATTC 31         /* GATT Client */
-#define BTA_ID_GATTS 32         /* GATT Client */
+#define BTA_ID_GATTS 32         /* GATT Server */
 #define BTA_ID_SDP 33           /* SDP Client */
 #define BTA_ID_TWS_PLUS 34      /* TWS+ Interface */
 #define BTA_ID_BAT 35           /* Broadcast Audio Transmitter  */
@@ -141,7 +141,7 @@ typedef uint8_t tBTA_SYS_PREF_ROLES;
 
 /* conn callback for role / low power manager*/
 typedef void(tBTA_SYS_CONN_CBACK)(tBTA_SYS_CONN_STATUS status, uint8_t id,
-                                  uint8_t app_id, const RawAddress* peer_addr);
+                                  uint8_t app_id, const RawAddress& peer_addr);
 
 /* conn callback for role / low power manager*/
 typedef void(tBTA_SYS_SSR_CFG_CBACK)(uint8_t id, uint8_t app_id,
@@ -225,7 +225,7 @@ extern void bta_sys_deregister(uint8_t id);
 extern bool bta_sys_is_register(uint8_t id);
 extern uint16_t bta_sys_get_sys_features(void);
 extern void bta_sys_sendmsg(void* p_msg);
-extern void do_in_bta_thread(const tracked_objects::Location& from_here,
+extern void do_in_bta_thread(const base::Location& from_here,
                              const base::Closure& task);
 extern void bta_sys_start_timer(alarm_t* alarm, period_ms_t interval,
                                 uint16_t event, uint16_t layer_specific);

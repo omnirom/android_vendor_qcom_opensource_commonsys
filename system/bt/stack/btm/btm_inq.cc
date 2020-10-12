@@ -1533,7 +1533,7 @@ void btm_event_filter_complete(uint8_t* p) {
 
   /* Only process the inquiry filter; Ignore the connection filter until it
      is used by the upper layers */
-  if (p_inq->inqfilt_active == true) {
+  if (p_inq->inqfilt_active) {
     /* Extract the returned status from the buffer */
     STREAM_TO_UINT8(hci_status, p);
     if (hci_status != HCI_SUCCESS) {
@@ -1805,7 +1805,7 @@ void btm_process_inq_results(uint8_t* p, uint8_t inq_res_mode) {
     else
       p_i->inq_info.results.rssi = BTM_INQ_RES_IGNORE_RSSI;
 
-    if (is_new == true) {
+    if (is_new) {
       /* Save the info */
       p_cur = &p_i->inq_info.results;
       p_cur->page_scan_rep_mode = page_scan_rep_mode;
@@ -1825,7 +1825,7 @@ void btm_process_inq_results(uint8_t* p, uint8_t inq_res_mode) {
       if (p_i->inq_count != p_inq->inq_counter)
         p_inq->inq_cmpl_info.num_resp++; /* A new response was found */
 
-      p_cur->inq_result_type = BTM_INQ_RESULT_BR;
+      p_cur->inq_result_type |= BTM_INQ_RESULT_BR;
       if (p_i->inq_count != p_inq->inq_counter) {
         p_cur->device_type = BT_DEVICE_TYPE_BREDR;
         p_i->scan_rsp = false;
@@ -2085,7 +2085,7 @@ tBTM_STATUS btm_initiate_rem_name(const RawAddress& remote_bda, uint8_t origin,
 
       /* If the database entry exists for the device, use its clock offset */
       tINQ_DB_ENT* p_i = btm_inq_db_find(remote_bda);
-      if (p_i) {
+      if (p_i && (p_i->inq_info.results.inq_result_type & BTM_INQ_RESULT_BR)) {
         tBTM_INQ_INFO* p_cur = &p_i->inq_info;
         btsnd_hcic_rmt_name_req(
             remote_bda, p_cur->results.page_scan_rep_mode,
@@ -2136,8 +2136,7 @@ void btm_process_remote_name(const RawAddress* bda, BD_NAME bdn,
 
   /* If the inquire BDA and remote DBA are the same, then stop the timer and set
    * the active to false */
-  if ((p_inq->remname_active == true) &&
-      (!bda || (*bda == p_inq->remname_bda))) {
+  if ((p_inq->remname_active) && (!bda || (*bda == p_inq->remname_bda))) {
     if (BTM_UseLeLink(p_inq->remname_bda)) {
       if (hci_status == HCI_ERR_UNSPECIFIED)
         btm_ble_cancel_remote_name(p_inq->remname_bda);

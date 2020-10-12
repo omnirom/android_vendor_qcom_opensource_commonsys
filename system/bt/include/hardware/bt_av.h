@@ -63,8 +63,6 @@ typedef enum {
 
   // Add an entry for each sink codec here
   BTAV_A2DP_CODEC_INDEX_SINK_SBC = BTAV_A2DP_CODEC_INDEX_SINK_MIN,
-  BTAV_A2DP_CODEC_INDEX_SINK_AAC,
-  BTAV_A2DP_CODEC_INDEX_SINK_APTX,
 
   BTAV_A2DP_CODEC_INDEX_SINK_MAX,
 
@@ -133,20 +131,20 @@ typedef struct {
 /** Callback for connection state change.
  *  state will have one of the values from btav_connection_state_t
  */
-typedef void (* btav_connection_state_callback)(btav_connection_state_t state,
-                                                    RawAddress *bd_addr);
+typedef void (* btav_connection_state_callback)(const RawAddress &bd_addr,
+                                                btav_connection_state_t state);
 
 /** Callback for audiopath state change.
  *  state will have one of the values from btav_audio_state_t
  */
-typedef void (* btav_audio_state_callback)(btav_audio_state_t state,
-                                               RawAddress *bd_addr);
+typedef void (* btav_audio_state_callback)(const RawAddress &bd_addr,
+                                           btav_audio_state_t state);
 
 /** Callback for audio configuration change.
  *  Used only for the A2DP Source interface.
  */
 typedef void (* btav_audio_source_config_callback)(
-    btav_a2dp_codec_config_t codec_config,
+    const RawAddress& bd_addr, btav_a2dp_codec_config_t codec_config,
     std::vector<btav_a2dp_codec_config_t> codecs_local_capabilities,
     std::vector<btav_a2dp_codec_config_t> codecs_selectable_capabilities);
 
@@ -155,9 +153,16 @@ typedef void (* btav_audio_source_config_callback)(
  *  sample_rate: sample rate in Hz
  *  channel_count: number of channels (1 for mono, 2 for stereo)
  */
-typedef void (* btav_audio_sink_config_callback)(RawAddress *bd_addr,
+typedef void (* btav_audio_sink_config_callback)(const RawAddress &bd_addr,
                                                  uint32_t sample_rate,
                                                  uint8_t channel_count);
+
+/** Callback for querying whether the mandatory codec is more preferred.
+ *  Used only for the A2DP Source interface.
+ *  Return true if optional codecs are not preferred.
+ */
+typedef bool (*btav_mandatory_codec_preferred_callback)(
+    const RawAddress& bd_addr);
 
 /** BT-AV A2DP Source callback structure. */
 typedef struct {
@@ -166,6 +171,7 @@ typedef struct {
     btav_connection_state_callback  connection_state_cb;
     btav_audio_state_callback audio_state_cb;
     btav_audio_source_config_callback audio_config_cb;
+    btav_mandatory_codec_preferred_callback mandatory_codec_preferred_cb;
 } btav_source_callbacks_t;
 
 /** BT-AV A2DP Sink callback structure. */
@@ -198,16 +204,22 @@ typedef struct {
      * Register the BtAv callbacks.
      */
     bt_status_t (*init)(btav_source_callbacks_t* callbacks,
-                std::vector<btav_a2dp_codec_config_t> codec_priorities);
+                int max_connected_audio_devices,
+                std::vector<btav_a2dp_codec_config_t>& codec_priorities);
 
     /** connect to headset */
-    bt_status_t (*connect)( RawAddress *bd_addr );
+    bt_status_t (*connect)(const RawAddress &bd_addr);
 
     /** dis-connect from headset */
-    bt_status_t (*disconnect)( RawAddress *bd_addr );
+    bt_status_t (*disconnect)(const RawAddress &bd_addr);
+
+    /** sets the connected device as active */
+    bt_status_t (*set_active_device)(const RawAddress& bd_addr);
 
     /** configure the codecs settings preferences */
-    bt_status_t (*config_codec)(std::vector<btav_a2dp_codec_config_t> codec_preferences);
+    bt_status_t (*config_codec)(
+      const RawAddress& bd_addr,
+      std::vector<btav_a2dp_codec_config_t> codec_preferences);
 
     /** Closes the interface. */
     void  (*cleanup)( void );
@@ -226,10 +238,10 @@ typedef struct {
     bt_status_t (*init)( btav_sink_callbacks_t* callbacks );
 
     /** connect to headset */
-    bt_status_t (*connect)( RawAddress *bd_addr );
+    bt_status_t (*connect)(const RawAddress &bd_addr );
 
     /** dis-connect from headset */
-    bt_status_t (*disconnect)( RawAddress *bd_addr );
+    bt_status_t (*disconnect)(const RawAddress &bd_addr );
 
     /** Closes the interface. */
     void  (*cleanup)( void );

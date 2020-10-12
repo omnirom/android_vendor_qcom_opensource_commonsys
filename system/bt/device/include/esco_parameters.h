@@ -33,6 +33,12 @@ typedef enum {
   ESCO_CODEC_CVSD = 0,
   ESCO_CODEC_MSBC_T1,
   ESCO_CODEC_MSBC_T2,
+#if (SWB_ENABLED == TRUE)
+  ESCO_CODEC_SWB_Q0,
+  ESCO_CODEC_SWB_Q1,
+  ESCO_CODEC_SWB_Q2,
+  ESCO_CODEC_SWB_Q3,
+#endif
 } esco_codec_t;
 
 #define ESCO_NUM_CODECS 3

@@ -39,8 +39,17 @@
 #define SOFT_HANDOFF 1
 #define RECONFIG_A2DP_PARAM 2
 
-#define APTX_HQ_LATENCY 200
-#define APTX_LL_LATENCY 70
+#define APTX_HQ 0X1000
+#define APTX_LL 0X2000
+#define APTX_ULL_S 0X4000
+#define APTX_ULL 0X6000
+#define APTX_MODE_MASK 0X7000
+#define APTX_SCAN_CONTROL_MASK 0X8000
+#define APTX_BATTERY_INFO 0X0F
+
+#define APTX_HQ_LATENCY 2000
+#define APTX_LL_LATENCY 700
+#define APTX_ULL_LATENCY 700
 
 /*******************************************************************************
  *  Type definitions for callback functions
@@ -65,8 +74,12 @@ typedef enum {
   BTIF_AV_REINIT_AUDIO_IF,
   BTIF_AV_SETUP_CODEC_REQ_EVT,
   BTIF_AV_TRIGGER_HANDOFF_REQ_EVT,
+  BTIF_AV_SET_SILENT_REQ_EVT,
   BTIF_AV_ENCODER_MODE_CHANGED_EVT,
   BTIF_AV_SINK_QUICK_HANDOFF_EVT,
+  BTIF_AV_PROCESS_HIDL_REQ_EVT,
+  BTIF_AV_CHECK_PENDING_PLAY_EVT,
+  BTIF_AV_REPORT_AUDIO_STATE_EVT,
 } btif_av_sm_event_t;
 
 /*******************************************************************************
@@ -222,6 +235,16 @@ void btif_av_clear_remote_suspend_flag(void);
  ******************************************************************************/
 bool btif_av_peer_supports_3mbps(void);
 
+/**
+ *
+ * Check whether the mandatory codec is more preferred for this peer.
+ *
+ * @param peer_address the target peer address
+ *
+ * @return true if optional codecs are not preferred to be used
+ */
+bool btif_av_peer_prefers_mandatory_codec(const RawAddress& peer_address);
+
 /*******************************************************************************
 **
 ** Function         btif_av_check_flag_remote_suspend
@@ -281,11 +304,11 @@ bool btif_av_is_multicast_supported();
  *
  * Function         btif_av_get_peer_addr
  *
- * Description      Returns peer device address
+ * Description      Returns active peer device address
  *
  * Returns          peer address
  *******************************************************************************/
-void btif_av_get_peer_addr(RawAddress *peer_bda);
+void btif_av_get_active_peer_addr(RawAddress *peer_bda);
 
 /*******************************************************************************
  *
@@ -537,4 +560,24 @@ void btif_initiate_sink_handoff(int idx, bool audio_state_changed);
 *******************************************************************************/
 int btif_get_max_allowable_sink_connections();
 
+/*******************************************************************************
+**
+** Function         btif_av_get_hndl_by_addr
+**
+** Description      Get AV handle for the associated bd_addr
+**
+** Returns          tBTA_AV_HNDL
+*******************************************************************************/
+tBTA_AV_HNDL btif_av_get_hndl_by_addr(RawAddress peer_address);
+
+bool btif_device_in_sink_role();
+void btif_av_signal_session_ready();
+void btif_av_set_suspend_rsp_track_timer(int index);
+void btif_av_set_suspend_rsp_track_timer_tout(void* data);
+#if (TWS_ENABLED == TRUE)
+void btif_av_set_tws_offload_started_sync_timer(int index);
+void btif_av_tws_offload_started_sync_timer_tout(void* data);
+void btif_av_clear_tws_offload_started_sync_timer(int index);
+#endif
+void btif_av_clear_suspend_rsp_track_timer(int index);
 #endif /* BTIF_AV_H */

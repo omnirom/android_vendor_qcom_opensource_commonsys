@@ -23,6 +23,18 @@
 
 #include "bt_types.h"
 
+#define A2DP_VERSION_CONFIG_KEY "A2dpVersion"
+#define AVDTP_VERSION_CONFIG_KEY "AvdtpVersion"
+#define HFP_VERSION_CONFIG_KEY "HfpVersion"
+#define AV_REM_CTRL_VERSION_CONFIG_KEY "AvrcpCtVersion"
+#define AV_REM_CTRL_TG_VERSION_CONFIG_KEY "AvrcpTgVersion"
+#define AV_REM_CTRL_FEATURES_CONFIG_KEY "AvrcpFeatures"
+#define PBAP_PCE_VERSION_CONFIG_KEY "PbapPceVersion"
+#define MAP_MCE_VERSION_CONFIG_KEY "MapMceVersion"
+#define PNP_VENDOR_ID_CONFIG_KEY "VendorID"
+#define PNP_PRODUCT_ID_CONFIG_KEY "ProductID"
+#define PNP_PRODUCT_VERSION_CONFIG_KEY "ProductVersion"
+
 static const char BTIF_CONFIG_MODULE[] = "btif_config_module";
 
 typedef struct btif_config_section_iter_t btif_config_section_iter_t;
@@ -31,6 +43,12 @@ bool btif_config_has_section(const char* section);
 bool btif_config_exist(const char* section, const char* key);
 bool btif_config_get_int(const char* section, const char* key, int* value);
 bool btif_config_set_int(const char* section, const char* key, int value);
+bool btif_config_get_uint16(const char* section, const char* key, uint16_t* value);
+bool btif_config_set_uint16(const char* section, const char* key, uint16_t value);
+bool btif_config_get_uint64(const char* section, const char* key,
+                            uint64_t* value);
+bool btif_config_set_uint64(const char* section, const char* key,
+                            uint64_t value);
 bool btif_config_get_str(const char* section, const char* key, char* value,
                          int* size_bytes);
 bool btif_config_set_str(const char* section, const char* key,

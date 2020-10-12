@@ -23,7 +23,7 @@
 #include <stdlib.h>
 
 #include <base/bind.h>
-#include <base/tracked_objects.h>
+#include <base/location.h>
 #include <hardware/bluetooth.h>
 
 #include "bt_types.h"
@@ -77,14 +77,14 @@
 
 extern bt_callbacks_t* bt_hal_cbacks;
 
-#define HAL_CBACK(P_CB, P_CBACK, ...)                \
-  do {                                               \
-    if ((P_CB) && (P_CB)->P_CBACK) {                 \
-      BTIF_TRACE_API("HAL %s->%s", #P_CB, #P_CBACK); \
-      (P_CB)->P_CBACK(__VA_ARGS__);                  \
-    } else {                                         \
-      ASSERTC(0, "Callback is NULL", 0);             \
-    }                                                \
+#define HAL_CBACK(P_CB, P_CBACK, ...)                              \
+  do {                                                             \
+    if ((P_CB) && (P_CB)->P_CBACK) {                               \
+      BTIF_TRACE_API("%s: HAL %s->%s", __func__, #P_CB, #P_CBACK); \
+      (P_CB)->P_CBACK(__VA_ARGS__);                                \
+    } else {                                                       \
+      ASSERTC(0, "Callback is NULL", 0);                           \
+    }                                                              \
   } while (0)
 
 /**
@@ -136,8 +136,8 @@ enum {
   BTIF_DM_CB_LE_TEST_END, /* BLE Test mode end callback */
 
   BTIF_HFP_CB_START = BTIF_SIG_CB_START(BTIF_HFP),
-  BTIF_HFP_CB_AUDIO_CONNECTING, /* HF AUDIO connect has been sent to BTA
-                                   successfully */
+  BTIF_HFP_CB_AUDIO_CONNECTING, /* HF AUDIO connect has been sent to BTA successfully */
+  BTIF_HFP_CB_AUDIO_DISCONNECTED, /* HF AUDIO has been disconnected */
 
   BTIF_PAN_CB_START = BTIF_SIG_CB_START(BTIF_PAN),
   BTIF_PAN_CB_DISCONNECTING, /* PAN Disconnect has been sent to BTA successfully
@@ -175,7 +175,7 @@ typedef struct {
  ******************************************************************************/
 
 extern bt_status_t do_in_jni_thread(const base::Closure& task);
-extern bt_status_t do_in_jni_thread(const tracked_objects::Location& from_here,
+extern bt_status_t do_in_jni_thread(const base::Location& from_here,
                                     const base::Closure& task);
 /**
  * This template wraps callback into callback that will be executed on jni
@@ -183,9 +183,9 @@ extern bt_status_t do_in_jni_thread(const tracked_objects::Location& from_here,
  */
 template <typename R, typename... Args>
 base::Callback<R(Args...)> jni_thread_wrapper(
-    const tracked_objects::Location& from_here, base::Callback<R(Args...)> cb) {
+    const base::Location& from_here, base::Callback<R(Args...)> cb) {
   return base::Bind(
-      [](const tracked_objects::Location& from_here,
+      [](const base::Location& from_here,
          base::Callback<R(Args...)> cb, Args... args) {
         do_in_jni_thread(from_here,
                          base::Bind(cb, std::forward<Args>(args)...));
@@ -212,6 +212,7 @@ void bte_load_did_conf(const char* p_path);
 void bte_main_boot_entry(void);
 void bte_main_enable(void);
 void bte_main_disable(void);
+void bte_main_hci_close(void);
 void bte_main_cleanup(void);
 void bte_main_postload_cfg(void);
 

@@ -22,17 +22,18 @@
 #include "a2dp_sbc_encoder.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "a2dp_sbc.h"
 #include "a2dp_sbc_up_sample.h"
 #include "bt_common.h"
-#include "embdrv/sbc/encoder/include/sbc_encoder.h"
+#include <sbc_encoder.h>
 #include "osi/include/log.h"
 #include "osi/include/osi.h"
 #include "btif/include/btif_a2dp_source.h"
-
+#include "osi/include/properties.h"
 /* Buffer pool */
 #define A2DP_SBC_BUFFER_SIZE BT_DEFAULT_BUFFER_SIZE
 
@@ -79,8 +80,8 @@ typedef struct {
   int32_t aa_feed_counter;
   int32_t aa_feed_residue;
   uint32_t counter;
-  uint32_t bytes_per_tick; /* pcm bytes read each media task tick */
-  uint64_t last_frame_us;
+  uint32_t bytes_per_tick;              // pcm bytes read each media task tick
+  uint64_t last_frame_timestamp_100ns;  // values in 1/10 microseconds
 } tA2DP_SBC_FEEDING_STATE;
 
 typedef struct {
@@ -146,7 +147,7 @@ void a2dp_sbc_encoder_init(const tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params,
                            A2dpCodecConfig* a2dp_codec_config,
                            a2dp_source_read_callback_t read_callback,
                            a2dp_source_enqueue_callback_t enqueue_callback) {
-  if (A2DP_GetOffloadStatus()) {
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
     LOG_INFO(LOG_TAG,"sbc is running in offload mode");
     return;
   }
@@ -401,7 +402,7 @@ void a2dp_sbc_encoder_cleanup(void) {
 
 void a2dp_sbc_feeding_reset(void) {
   /* By default, just clear the entire state */
-  if (A2DP_GetOffloadStatus()) {
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
     LOG_INFO(LOG_TAG,"a2dp_sbc_feeding_reset:"
                      "sbc is running in offload mode");
     return;
@@ -421,7 +422,7 @@ void a2dp_sbc_feeding_reset(void) {
 }
 
 void a2dp_sbc_feeding_flush(void) {
-  if (A2DP_GetOffloadStatus()) {
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
     LOG_INFO(LOG_TAG,"a2dp_sbc_feeding_flush:"
                      "sbc is running in offload mode");
     return;
@@ -431,7 +432,7 @@ void a2dp_sbc_feeding_flush(void) {
 }
 
 period_ms_t a2dp_sbc_get_encoder_interval_ms(void) {
-  if (A2DP_GetOffloadStatus()) {
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
     LOG_INFO(LOG_TAG,"a2dp_sbc_get_encoder_interval_ms:"
                      "sbc is running in offload mode");
     return 0;
@@ -443,7 +444,7 @@ void a2dp_sbc_send_frames(uint64_t timestamp_us) {
   uint8_t nb_frame = 0;
   uint8_t nb_iterations = 0;
 
-  if (A2DP_GetOffloadStatus()) {
+  if (A2DP_IsCodecEnabledInOffload(BTAV_A2DP_CODEC_INDEX_SOURCE_SBC)) {
     LOG_INFO(LOG_TAG,"a2dp_sbc_send_frames:"
                      "sbc is running in offload mode");
     return;
@@ -477,15 +478,29 @@ static void a2dp_sbc_get_num_frame_iteration(uint8_t* num_of_iterations,
   LOG_VERBOSE(LOG_TAG, "%s: pcm_bytes_per_frame %u", __func__,
               pcm_bytes_per_frame);
 
-  uint32_t us_this_tick = A2DP_SBC_ENCODER_INTERVAL_MS * 1000;
-  uint64_t now_us = timestamp_us;
-  if (a2dp_sbc_encoder_cb.feeding_state.last_frame_us != 0)
-    us_this_tick = (now_us - a2dp_sbc_encoder_cb.feeding_state.last_frame_us);
-  a2dp_sbc_encoder_cb.feeding_state.last_frame_us = now_us;
+  uint32_t hecto_ns_this_tick = A2DP_SBC_ENCODER_INTERVAL_MS * 10000;
+  uint64_t* last_100ns =
+      &a2dp_sbc_encoder_cb.feeding_state.last_frame_timestamp_100ns;
+  uint64_t now_100ns = timestamp_us * 10;
+  if (*last_100ns != 0) {
+    hecto_ns_this_tick = (now_100ns - *last_100ns);
+  }
+  *last_100ns = now_100ns;
 
-  a2dp_sbc_encoder_cb.feeding_state.counter +=
-      a2dp_sbc_encoder_cb.feeding_state.bytes_per_tick * us_this_tick /
-      (A2DP_SBC_ENCODER_INTERVAL_MS * 1000);
+  uint32_t bytes_this_tick = a2dp_sbc_encoder_cb.feeding_state.bytes_per_tick *
+                             hecto_ns_this_tick /
+                             (A2DP_SBC_ENCODER_INTERVAL_MS * 10000);
+  a2dp_sbc_encoder_cb.feeding_state.counter += bytes_this_tick;
+  // Without this erratum, there was a three microseocnd shift per tick which
+  // would cause one SBC frame mismatched after every 20 seconds
+  uint32_t erratum_100ns =
+      ceil(1.0f * A2DP_SBC_ENCODER_INTERVAL_MS * 10000 * bytes_this_tick /
+           a2dp_sbc_encoder_cb.feeding_state.bytes_per_tick);
+  if (erratum_100ns < hecto_ns_this_tick) {
+    LOG_VERBOSE(LOG_TAG, "%s: hecto_ns_this_tick=%d, bytes=%d, erratum_100ns=%d",
+                __func__, hecto_ns_this_tick, bytes_this_tick, erratum_100ns);
+    *last_100ns -= hecto_ns_this_tick - erratum_100ns;
+  }
 
   /* Calculate the number of frames pending for this media tick */
   projected_nof =
@@ -886,7 +901,12 @@ static uint16_t a2dp_sbc_offload_source_rate(bool is_peer_edr) {
 }
 static uint16_t a2dp_sbc_source_rate(void) {
   uint16_t rate = A2DP_SBC_DEFAULT_BITRATE;
-
+  char value[PROPERTY_VALUE_MAX] = {'\0'};
+  osi_property_get("persist.vendor.btstack.sbcmq", value, "false");
+  if (!(strcmp(value,"true"))) {
+     LOG_ERROR(LOG_TAG,"%s:MQ enabled",__func__);
+     return A2DP_SBC_NON_EDR_MAX_RATE;
+  }
   /* restrict bitrate if a2dp link is non-edr */
   if (!a2dp_sbc_encoder_cb.is_peer_edr) {
     rate = A2DP_SBC_NON_EDR_MAX_RATE;

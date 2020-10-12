@@ -331,7 +331,7 @@ tGATT_STATUS attp_send_msg_to_l2cap(tGATT_TCB& tcb, BT_HDR* p_toL2CAP) {
     l2cap_ret = (uint16_t)L2CA_DataWrite(tcb.att_lcid, p_toL2CAP);
 
   if (l2cap_ret == L2CAP_DW_FAILED) {
-    LOG(ERROR) << StringPrintf("ATT   failed to pass msg to L2CAP");
+    LOG(ERROR) << __func__ << ": failed to write data to L2CAP";
     return GATT_INTERNAL_ERROR;
   } else if (l2cap_ret == L2CAP_DW_CONGESTED) {
     VLOG(1) << StringPrintf("ATT congested, message accepted");
@@ -352,9 +352,9 @@ BT_HDR* attp_build_sr_msg(tGATT_TCB& tcb, uint8_t op_code,
           "ATT_RSP_READ_BLOB/GATT_RSP_PREPARE_WRITE: len = %d offset = %d",
           p_msg->attr_value.len, p_msg->attr_value.offset);
       offset = p_msg->attr_value.offset;
-    /* Coverity: [FALSE-POSITIVE error] intended fall through */
-    /* Missing break statement between cases in switch statement */
-    /* fall through */
+      /* Coverity: [FALSE-POSITIVE error] intended fall through */
+      /* Missing break statement between cases in switch statement */
+      FALLTHROUGH_INTENDED; /* FALLTHROUGH */
     case GATT_RSP_READ_BY_TYPE:
     case GATT_RSP_READ:
     case GATT_HANDLE_VALUE_NOTIF:
@@ -482,7 +482,7 @@ tGATT_STATUS attp_send_cl_msg(tGATT_TCB& tcb, tGATT_CLCB* p_clcb,
 
     case GATT_REQ_READ_BLOB:
       offset = p_msg->read_blob.offset;
-    /* fall through */
+      FALLTHROUGH_INTENDED; /* FALLTHROUGH */
     case GATT_REQ_READ:
       handle =
           (op_code == GATT_REQ_READ) ? p_msg->handle : p_msg->read_blob.handle;
@@ -498,7 +498,7 @@ tGATT_STATUS attp_send_cl_msg(tGATT_TCB& tcb, tGATT_CLCB* p_clcb,
 
     case GATT_REQ_PREPARE_WRITE:
       offset = p_msg->attr_value.offset;
-    /* fall through */
+      FALLTHROUGH_INTENDED; /* FALLTHROUGH */
     case GATT_REQ_WRITE:
     case GATT_CMD_WRITE:
     case GATT_SIGN_CMD_WRITE:

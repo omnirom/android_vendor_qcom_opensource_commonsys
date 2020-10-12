@@ -98,7 +98,11 @@ enum {
   BTA_DM_API_REMOVE_DEVICE_EVT,
   BTA_DM_API_HCI_RAW_COMMAND_EVT,
   BTA_DM_API_SET_WIFI_STATE_EVT,
+  BTA_DM_API_SET_PWR_BACKOFF_EVT,
   BTA_DM_API_IOT_REPORT_EVT,
+  BTA_DM_API_BREDR_CLEANUP_EVT,
+  BTA_DM_API_BREDR_STARTUP_EVT,
+  BTA_DM_API_RST_PAIR_FLAG_EVT,
   BTA_DM_MAX_EVT
 };
 
@@ -234,8 +238,8 @@ typedef struct {
 typedef struct {
   BT_HDR hdr;
   RawAddress bd_addr;
-  BT_OCTET16 c;
-  BT_OCTET16 r;
+  Octet16 c;
+  Octet16 r;
   bool accept;
 } tBTA_DM_CI_RMT_OOB;
 
@@ -314,7 +318,7 @@ typedef struct {
   BT_HDR hdr;
   RawAddress bd_addr;
   DEV_CLASS dc;
-  LINK_KEY link_key;
+  LinkKey link_key;
   tBTA_SERVICE_MASK tm;
   bool is_trusted;
   uint8_t key_type;
@@ -333,12 +337,38 @@ typedef struct {
   RawAddress bd_addr;
 } tBTA_DM_API_REMOVE_DEVICE;
 
+/* data type for BTA_DM_API_RST_PAIR_FLAG_EVT */
+typedef struct {
+  BT_HDR hdr;
+  RawAddress bd_addr;
+} tBTA_DM_API_RST_PAIR_FLAG;
+
 /* data type for BTA_DM_API_SET_WIFI_STATE_EVT */
 typedef struct
 {
   BT_HDR hdr;
   bool status;
 } tBTA_DM_API_SET_WIFI_STATE;
+
+/* data type for tBTA_DM_API_SET_PWR_BACKOFF */
+typedef struct
+{
+  BT_HDR hdr;
+  bool status;
+} tBTA_DM_API_SET_PWR_BACKOFF;
+
+/* data type for BTA_DM_API_BREDR_CLEANUP_EVT */
+typedef struct
+{
+  BT_HDR hdr;
+} tBTA_DM_API_BREDR_CLEANUP;
+
+/* data type for BTA_DM_API_BREDR_STARTUP_EVT */
+typedef struct
+{
+  BT_HDR hdr;
+} tBTA_DM_API_BREDR_STARTUP;
+
 /* data type for BTA_DM_API_EXECUTE_CBACK_EVT */
 typedef struct {
   BT_HDR hdr;
@@ -410,7 +440,7 @@ typedef struct {
 /* set scan parameter for BLE connections */
 typedef struct {
   BT_HDR hdr;
-  tBTA_GATTC_IF client_if;
+  tGATT_IF client_if;
   uint32_t scan_int;
   uint32_t scan_window;
   tBLE_SCAN_MODE scan_mode;
@@ -543,10 +573,14 @@ typedef union {
   tBTA_DM_API_REMOVE_ALL_ACL remove_all_acl;
   tBTA_DM_API_RAW_COMMAND btc_command;
   tBTA_DM_API_SET_WIFI_STATE wifi_state;
+  tBTA_DM_API_SET_PWR_BACKOFF pwr_backoff_state;
   tBTA_DM_VND_IOT_REPORT iot_info;
+  tBTA_DM_API_BREDR_CLEANUP  bredr_cleanup;
+  tBTA_DM_API_BREDR_STARTUP  bredr_startup;
+  tBTA_DM_API_RST_PAIR_FLAG pair_state;
 } tBTA_DM_MSG;
 
-#define BTA_DM_NUM_PEER_DEVICE 7
+#define BTA_DM_NUM_PEER_DEVICE MAX_L2CAP_LINKS
 
 #define BTA_DM_NOT_CONNECTED 0
 #define BTA_DM_CONNECTED 1
@@ -607,7 +641,7 @@ typedef struct {
 } tBTA_DM_SRVCS;
 
 #ifndef BTA_DM_NUM_CONN_SRVS
-#define BTA_DM_NUM_CONN_SRVS 10
+#define BTA_DM_NUM_CONN_SRVS 30
 #endif
 
 typedef struct {
@@ -718,7 +752,7 @@ typedef struct {
   bool cancel_pending; /* inquiry cancel is pending */
   tBTA_TRANSPORT transport;
   tBTA_DM_SEARCH_CBACK* p_scan_cback;
-  tBTA_GATTC_IF client_if;
+  tGATT_IF client_if;
   uint8_t num_uuid;
   bluetooth::Uuid* p_srvc_uuid;
   uint8_t uuid_to_search;
@@ -853,6 +887,9 @@ extern void bta_dm_set_visibility(tBTA_DM_MSG* p_data);
 extern void bta_dm_set_scan_config(tBTA_DM_MSG* p_data);
 extern void bta_dm_vendor_spec_command(tBTA_DM_MSG* p_data);
 extern void bta_dm_set_wifi_state(tBTA_DM_MSG *p_data);
+extern void bta_dm_power_back_off(tBTA_DM_MSG *p_data);
+extern void bta_dm_bredr_cleanup(tBTA_DM_MSG *p_data);
+extern void bta_dm_bredr_startup(tBTA_DM_MSG *p_data);
 extern void bta_dm_bond(tBTA_DM_MSG* p_data);
 extern void bta_dm_bond_cancel(tBTA_DM_MSG* p_data);
 extern void bta_dm_pin_reply(tBTA_DM_MSG* p_data);
@@ -862,6 +899,7 @@ extern void bta_dm_process_ssr(void);
 extern void bta_dm_add_device(tBTA_DM_MSG* p_data);
 extern void bta_dm_remove_device(tBTA_DM_MSG* p_data);
 extern void bta_dm_close_acl(tBTA_DM_MSG* p_data);
+extern void bta_dm_reset_pairing_flag(tBTA_DM_MSG* p_data);
 
 extern void bta_dm_pm_btm_status(tBTA_DM_MSG* p_data);
 extern void bta_dm_pm_timer(tBTA_DM_MSG* p_data);

@@ -18,11 +18,6 @@
 
 #define LOG_TAG "bt_btm_ble"
 
-#include <base/bind.h>
-#include <string.h>
-#include <algorithm>
-#include <vector>
-
 #include "bt_target.h"
 
 #include "bt_types.h"
@@ -34,6 +29,14 @@
 #include "hcidefs.h"
 #include "hcimsgs.h"
 
+#include <string.h>
+#include <algorithm>
+#include <vector>
+
+#include <base/bind.h>
+#include <base/bind_helpers.h>
+
+using base::Bind;
 using bluetooth::Uuid;
 
 #define BTM_BLE_ADV_FILT_META_HDR_LENGTH 3
@@ -75,30 +78,8 @@ static uint8_t btm_ble_cs_update_pf_counter(tBTM_BLE_SCAN_COND_OP action,
 #define BTM_BLE_ADV_FILT_CB_EVT_MASK 0xF0
 #define BTM_BLE_ADV_FILT_SUBCODE_MASK 0x0F
 
-/*******************************************************************************
- *
- * Function         btm_ble_obtain_vsc_details
- *
- * Description      This function obtains the VSC details
- *
- * Parameters
- *
- * Returns          status
- *
- ******************************************************************************/
-tBTM_STATUS btm_ble_obtain_vsc_details() {
-  tBTM_STATUS st = BTM_SUCCESS;
-
-#if (BLE_VND_INCLUDED == TRUE)
-  BTM_BleGetVendorCapabilities(&cmn_ble_vsc_cb);
-  if (cmn_ble_vsc_cb.filter_support && 0 == cmn_ble_vsc_cb.max_filter) {
-    st = BTM_MODE_UNSUPPORTED;
-    return st;
-  }
-#else
-  cmn_ble_vsc_cb.max_filter = BTM_BLE_MAX_FILTER_COUNTER;
-#endif
-  return st;
+bool is_filtering_supported() {
+  return cmn_ble_vsc_cb.filter_support != 0 && cmn_ble_vsc_cb.max_filter != 0;
 }
 
 /*******************************************************************************
@@ -131,6 +112,9 @@ uint8_t btm_ble_condtype_to_ocf(uint8_t cond_type) {
       break;
     case BTM_BLE_PF_SRVC_DATA_PATTERN:
       ocf = BTM_BLE_META_PF_SRVC_DATA;
+      break;
+    case BTM_BLE_PF_TDS_DATA:
+      ocf = BTM_BLE_META_PF_TDS_DATA;
       break;
     case BTM_BLE_PF_TYPE_ALL:
       ocf = BTM_BLE_META_PF_ALL;
@@ -175,6 +159,9 @@ uint8_t btm_ble_ocf_to_condtype(uint8_t ocf) {
       break;
     case BTM_BLE_META_PF_SRVC_DATA:
       cond_type = BTM_BLE_PF_SRVC_DATA_PATTERN;
+      break;
+    case BTM_BLE_META_PF_TDS_DATA:
+      cond_type = BTM_BLE_PF_TDS_DATA;
       break;
     case BTM_BLE_META_PF_ALL:
       cond_type = BTM_BLE_PF_TYPE_ALL;
@@ -459,8 +446,6 @@ uint8_t btm_ble_cs_update_pf_counter(tBTM_BLE_SCAN_COND_OP action,
   tBTM_BLE_PF_COUNT* p_addr_filter = NULL;
   uint8_t* p_counter = NULL;
 
-  btm_ble_obtain_vsc_details();
-
   if (cond_type > BTM_BLE_PF_TYPE_ALL) {
     BTM_TRACE_ERROR("unknown PF filter condition type %d", cond_type);
     return BTM_BLE_INVALID_COUNTER;
@@ -469,7 +454,7 @@ uint8_t btm_ble_cs_update_pf_counter(tBTM_BLE_SCAN_COND_OP action,
   /* for these three types of filter, always generic */
   if (BTM_BLE_PF_ADDR_FILTER == cond_type ||
       BTM_BLE_PF_MANU_DATA == cond_type || BTM_BLE_PF_LOCAL_NAME == cond_type ||
-      BTM_BLE_PF_SRVC_DATA_PATTERN == cond_type)
+      BTM_BLE_PF_SRVC_DATA_PATTERN == cond_type || BTM_BLE_PF_TDS_DATA == cond_type)
     p_bd_addr = NULL;
 
   if ((p_addr_filter = btm_ble_find_addr_filter_counter(p_bd_addr)) == NULL &&
@@ -522,6 +507,19 @@ void BTM_LE_PF_addr_filter(tBTM_BLE_SCAN_COND_OP action,
   UINT8_TO_STREAM(p, filt_index);
 
   if (action != BTM_BLE_SCAN_COND_CLEAR) {
+#if (BLE_PRIVACY_SPT == TRUE)
+    if (addr.type == BLE_ADDR_PUBLIC_ID) {
+      LOG(INFO) << __func__ << " Filter address " << addr.bda
+                << " has type PUBLIC_ID, try to get identity address";
+      /* If no matching identity address is found for the input address,
+       * this call will have no effect. */
+      btm_random_pseudo_to_identity_addr(&addr.bda, &addr.type);
+    }
+#endif
+
+    LOG(INFO) << __func__
+              << " Adding scan filter with peer address: " << addr.bda;
+
     BDADDR_TO_STREAM(p, addr.bda);
     UINT8_TO_STREAM(p, addr.type);
   }
@@ -542,7 +540,7 @@ void BTM_LE_PF_uuid_filter(tBTM_BLE_SCAN_COND_OP action,
                            tBTM_BLE_PF_COND_TYPE filter_type,
                            const bluetooth::Uuid& uuid,
                            tBTM_BLE_PF_LOGIC_TYPE cond_logic,
-                           tBTM_BLE_PF_COND_MASK* p_uuid_mask,
+                           const bluetooth::Uuid& uuid_mask,
                            tBTM_BLE_PF_CFG_CBACK cb) {
   uint8_t evt_type;
 
@@ -580,15 +578,16 @@ void BTM_LE_PF_uuid_filter(tBTM_BLE_SCAN_COND_OP action,
       return;
     }
 
-    if (p_uuid_mask) {
+    if (!uuid_mask.IsEmpty()) {
       if (uuid_len == Uuid::kNumBytes16) {
-        UINT16_TO_STREAM(p, p_uuid_mask->uuid16_mask);
+        UINT16_TO_STREAM(p, uuid_mask.As16Bit());
         len += Uuid::kNumBytes16;
       } else if (uuid_len == Uuid::kNumBytes32) {
-        UINT32_TO_STREAM(p, p_uuid_mask->uuid32_mask);
+        UINT32_TO_STREAM(p, uuid_mask.As32Bit());
         len += Uuid::kNumBytes32;
       } else if (uuid_len == Uuid::kNumBytes128) {
-        ARRAY_TO_STREAM(p, p_uuid_mask->uuid128_mask, (int)Uuid::kNumBytes128);
+        const auto& tmp = uuid.To128BitLE();
+        ARRAY_TO_STREAM(p, tmp.data(), (int)Uuid::kNumBytes128);
         len += Uuid::kNumBytes128;
       }
     } else {
@@ -604,10 +603,147 @@ void BTM_LE_PF_uuid_filter(tBTM_BLE_SCAN_COND_OP action,
 }
 
 /**
+ * This function updates(add,delete or clear) the adv transport discovery
+ * data filtering condition.
+ */
+void BTM_LE_PF_tds_data(tBTM_BLE_SCAN_COND_OP action,
+                        tBTM_BLE_PF_FILT_INDEX filt_index, uint8_t org_id,
+                        uint8_t tds_flags, uint8_t tds_flags_mask,
+                        std::vector<uint8_t> wifi_nan_hash,
+                        tBTM_BLE_PF_CFG_CBACK cb) {
+  uint8_t len = BTM_BLE_ADV_FILT_META_HDR_LENGTH;
+  uint8_t len_max = len + BTM_BLE_PF_STR_LEN_MAX;
+
+  uint8_t param[len_max];
+  memset(param, 0, len_max);
+
+  BTM_TRACE_ERROR("%s:", __func__);
+  uint8_t* p = param;
+  UINT8_TO_STREAM(p, BTM_BLE_META_PF_TDS_DATA);
+  UINT8_TO_STREAM(p, action);
+  UINT8_TO_STREAM(p, filt_index);
+
+  if (action != BTM_BLE_SCAN_COND_CLEAR) {
+    uint8_t size = std::min(wifi_nan_hash.size(), (size_t)(BTM_BLE_PF_STR_LEN_MAX - 3));
+    UINT8_TO_STREAM(p, org_id);
+    UINT8_TO_STREAM(p, tds_flags);
+    UINT8_TO_STREAM(p, tds_flags_mask);
+    if ((size > 0) && (wifi_nan_hash.size() > 0)) {
+      REVERSE_ARRAY_TO_STREAM(p, wifi_nan_hash.data(), size);
+      len += size + 3;
+    }
+    else {
+      len += 3;
+    }
+    BTM_TRACE_DEBUG("TDS data command length: %d", len);
+  }
+
+  btu_hcif_send_cmd_with_cb(
+      FROM_HERE, HCI_BLE_ADV_FILTER_OCF, param, len,
+      base::Bind(&btm_flt_update_cb, BTM_BLE_META_PF_TDS_DATA, cb));
+
+  memset(&btm_ble_adv_filt_cb.cur_filter_target, 0, sizeof(tBLE_BD_ADDR));
+}
+
+void BTM_LE_PF_set(tBTM_BLE_PF_FILT_INDEX filt_index,
+                   std::vector<ApcfCommand> commands,
+                   tBTM_BLE_PF_CFG_CBACK cb) {
+  if (!is_filtering_supported()) {
+    cb.Run(0, BTM_BLE_PF_ENABLE, 1 /* BTA_FAILURE */);
+    return;
+  }
+
+  int action = BTM_BLE_SCAN_COND_ADD;
+  for (const ApcfCommand& cmd : commands) {
+    /* If data is passed, both mask and data have to be the same length */
+    if (cmd.data.size() != cmd.data_mask.size() && cmd.data.size() != 0 &&
+        cmd.data_mask.size() != 0) {
+      LOG(ERROR) << __func__ << " data(" << cmd.data.size() << ") and mask("
+                 << cmd.data_mask.size() << ") are of different size";
+      continue;
+    }
+
+    switch (cmd.type) {
+      case BTM_BLE_PF_ADDR_FILTER: {
+        tBLE_BD_ADDR target_addr;
+        tBT_DEVICE_TYPE dev_type;
+
+        target_addr.bda = cmd.address;
+        target_addr.type = cmd.addr_type;
+
+        /* cmd.addr_type value always coming as 2 (default value).
+         * Due to that addr_type is not taking consider if the remote device
+         * address is Static RANDOM addr_type (1). So here we are reading
+         * proper addr_type from ReadDevInfo. If the device addr_type is not
+         * in the inquiry database or in the bonded list then default addr_type
+         * 0x02 will be set.*/
+        BTM_ReadDevScanInfo(target_addr.bda, &dev_type, &target_addr.type);
+        BTM_LE_PF_addr_filter(action, filt_index, target_addr,
+                              base::DoNothing());
+        break;
+      }
+
+      case BTM_BLE_PF_SRVC_DATA:
+        BTM_LE_PF_srvc_data(action, filt_index);
+        break;
+
+      case BTM_BLE_PF_SRVC_UUID:
+      case BTM_BLE_PF_SRVC_SOL_UUID: {
+        if(cmd.uuid_mask.IsEmpty()) {
+          LOG(INFO) << __func__ <<" UUID MASK is empty ";
+        }
+        BTM_LE_PF_uuid_filter(action, filt_index, cmd.type, cmd.uuid,
+                              BTM_BLE_PF_LOGIC_AND, cmd.uuid_mask,
+                              base::DoNothing());
+        break;
+      }
+
+      case BTM_BLE_PF_LOCAL_NAME: {
+        for (ApcfCommand filter : commands) {
+          if (filter.type == BTM_BLE_PF_LOCAL_NAME)
+            filter.data = filter.name;
+        }
+
+        BTM_LE_PF_local_name(action, filt_index, cmd.name, base::DoNothing());
+        break;
+      }
+
+      case BTM_BLE_PF_MANU_DATA: {
+        BTM_LE_PF_manu_data(action, filt_index, cmd.company, cmd.company_mask,
+                            cmd.data, cmd.data_mask, base::DoNothing());
+        break;
+      }
+
+      case BTM_BLE_PF_SRVC_DATA_PATTERN: {
+        BTM_LE_PF_srvc_data_pattern(action, filt_index, cmd.data, cmd.data_mask,
+                                    base::DoNothing());
+        break;
+      }
+
+      case BTM_BLE_PF_TDS_DATA: {
+        BTM_LE_PF_tds_data(action, filt_index, cmd.org_id, cmd.tds_flags,
+                           cmd.tds_flags_mask, cmd.data, base::DoNothing());
+        break;
+      }
+
+      default:
+        LOG(ERROR) << __func__ << ": Unknown filter type: " << +cmd.type;
+        break;
+    }
+  }
+  cb.Run(0, 0, 0);
+}
+
+/**
  * all adv payload filter by de-selecting all the adv pf feature bits
  */
 void BTM_LE_PF_clear(tBTM_BLE_PF_FILT_INDEX filt_index,
                      tBTM_BLE_PF_CFG_CBACK cb) {
+  if (!is_filtering_supported()) {
+    cb.Run(0, BTM_BLE_PF_ENABLE, 1 /* BTA_FAILURE */);
+    return;
+  }
+
   /* clear the general filter entry */
   {
     tBTM_BLE_PF_CFG_CBACK fDoNothing;
@@ -624,14 +760,20 @@ void BTM_LE_PF_clear(tBTM_BLE_PF_FILT_INDEX filt_index,
 
     /* clear UUID filter */
     BTM_LE_PF_uuid_filter(BTM_BLE_SCAN_COND_CLEAR, filt_index,
-                          BTM_BLE_PF_SRVC_UUID, {}, 0, nullptr, fDoNothing);
+                          BTM_BLE_PF_SRVC_UUID, {}, 0, Uuid::kEmpty,
+                          fDoNothing);
 
     BTM_LE_PF_uuid_filter(BTM_BLE_SCAN_COND_CLEAR, filt_index,
-                          BTM_BLE_PF_SRVC_SOL_UUID, {}, 0, nullptr, fDoNothing);
+                          BTM_BLE_PF_SRVC_SOL_UUID, {}, 0, Uuid::kEmpty,
+                          fDoNothing);
 
     /* clear service data filter */
     BTM_LE_PF_srvc_data_pattern(BTM_BLE_SCAN_COND_CLEAR, filt_index, {}, {},
                                 fDoNothing);
+
+    /* clear transport discovery data filter */
+    BTM_LE_PF_tds_data(BTM_BLE_SCAN_COND_CLEAR, filt_index, 0, 0, 0, {},
+                       base::DoNothing());
   }
 
   uint8_t len = BTM_BLE_ADV_FILT_META_HDR_LENGTH + BTM_BLE_PF_FEAT_SEL_LEN;
@@ -678,7 +820,7 @@ void BTM_BleAdvFilterParamSetup(
                 BTM_BLE_ADV_FILT_FEAT_SELN_LEN + BTM_BLE_ADV_FILT_TRACK_NUM;
   uint8_t param[len], *p;
 
-  if (BTM_SUCCESS != btm_ble_obtain_vsc_details()) {
+  if (!is_filtering_supported()) {
     cb.Run(0, BTM_BLE_PF_ENABLE, 1 /* BTA_FAILURE */);
     return;
   }
@@ -796,7 +938,7 @@ void enable_cmpl_cback(tBTM_BLE_PF_STATUS_CBACK p_stat_cback, uint8_t* p,
  ******************************************************************************/
 void BTM_BleEnableDisableFilterFeature(uint8_t enable,
                                        tBTM_BLE_PF_STATUS_CBACK p_stat_cback) {
-  if (BTM_SUCCESS != btm_ble_obtain_vsc_details()) {
+  if (!is_filtering_supported()) {
     if (p_stat_cback) p_stat_cback.Run(BTM_BLE_PF_ENABLE, 1 /* BTA_FAILURE */);
     return;
   }
@@ -826,7 +968,10 @@ void BTM_BleEnableDisableFilterFeature(uint8_t enable,
  ******************************************************************************/
 void btm_ble_adv_filter_init(void) {
   memset(&btm_ble_adv_filt_cb, 0, sizeof(tBTM_BLE_ADV_FILTER_CB));
-  if (BTM_SUCCESS != btm_ble_obtain_vsc_details()) return;
+
+  BTM_BleGetVendorCapabilities(&cmn_ble_vsc_cb);
+
+  if (!is_filtering_supported()) return;
 
   if (cmn_ble_vsc_cb.max_filter > 0) {
     btm_ble_adv_filt_cb.p_addr_filter_count = (tBTM_BLE_PF_COUNT*)osi_malloc(

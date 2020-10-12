@@ -68,6 +68,7 @@ import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.text.TextUtils;
 import android.util.Log;
+import android.util.Size;
 
 public class AvrcpBipRspParser {
     private String TAG = "AvrcpBipParser";
@@ -75,13 +76,11 @@ public class AvrcpBipRspParser {
     private final boolean D = true;
     private static final boolean V = AvrcpBipRsp.V;
     private Context mContext;
-    private HashMap<String, String> mArtHandleMap = new HashMap<String, String>();
-    private HashMap<String, AvrcpBipRspCoverArtAttributes> mCoverArtAttributesMap =
-        new HashMap<String, AvrcpBipRspCoverArtAttributes>();
-    private long mAlbumId = -1;
-    private long mAlbumUriId = -1;
-    private final String mAlbumUri = "content://media/external/audio/albumart";
-    private String mArtPath;
+    private HashMap<Long, String> mArtHandleMap = new HashMap<Long, String>();
+    private HashMap<String, AvrcpBipRspCoverArtAttributes > mCoverArtAttributesMap =
+        new HashMap<String, AvrcpBipRspCoverArtAttributes >();
+    private final Uri URI_ALBUM = MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI;
+    private final Uri URI_MEDIA = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
     private int BIP_THUMB_WIDTH = 200;
     private int BIP_THUMB_HEIGHT = 200;
     private int MIN_SUPPORTED_WIDTH = 100;
@@ -103,15 +102,19 @@ public class AvrcpBipRspParser {
     /* Tmp path for storing file before compressing and sending to obex.
      * This file is deleted after the operation */
     private String mTmpFilePath;
-    private String basePath = null;
+    private final String ORDER_BY = MediaStore.Audio.Albums.DEFAULT_SORT_ORDER;
+    private final String[] COL_ALBUM = new String[] {
+             MediaStore.Audio.Albums._ID,
+             MediaStore.Audio.Albums.ALBUM_ID,
+    };
+    private final String WHERE = MediaStore.Audio.Albums.ALBUM + "=?";
+
     public AvrcpBipRspParser(Context context, String tag) {
         setTag(tag);
         mContext = context;
         mArtHandleMap.clear();
         mCoverArtAttributesMap.clear();
-        mTmpFilePath = Environment.getExternalStorageDirectory()
-                + "/tmpBtBip" + tag.replaceAll(":","") + ".jpg";
-        if (V) Log.v(TAG," mTmpFilePath :" + mTmpFilePath);
+        setTmpPath(tag);
         delTmpFile();
     }
 
@@ -133,6 +136,14 @@ public class AvrcpBipRspParser {
         private int mWidth = 0;
         private int mHeight = 0;
         private long albumUriId = 0;
+
+        Uri getmAlbumUri() {
+            if (albumId != 0) {
+                return ContentUris.withAppendedId(URI_ALBUM, albumId);
+            } else {
+                return null;
+            }
+        }
 
         public long getAlbumUriId() {
             return albumUriId;
@@ -216,102 +227,52 @@ public class AvrcpBipRspParser {
         return convArray;
     }
 
-    private Bitmap getScaledBitmap(long album_id, int w, int h) {
+    private Bitmap getScaledBitmap(Uri uri, int w, int h) {
         ContentResolver res = mContext.getContentResolver();
-
-        if (res == null)
-            return null;
-
-        Uri uri = ContentUris.withAppendedId(Uri.parse(mAlbumUri), album_id);
-        if (V) {
-            Log.d(TAG, " getScaledBitmap uri :" + uri);
-        } else {
-            if (D) Log.d(TAG, " getScaledBitmap");
+        Bitmap bitmap = null;
+        if (D) {
+            Log.d(TAG, " getScaledBitmap uri :" + uri + " w :" + w + " h :" + h);
         }
-        if (uri != null) {
-            ParcelFileDescriptor fd = null;
+        if (res != null && uri != null) {
             try {
-                fd = res.openFileDescriptor(uri, "r");
-                int sampleSize = 1;
-                BitmapFactory.Options opt = new BitmapFactory.Options();
-
-                opt.inJustDecodeBounds = true;
-                opt.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                BitmapFactory.decodeFileDescriptor(
-                fd.getFileDescriptor(), null, opt);
-                int nextWidth = opt.outWidth >> 1;
-                int nextHeight = opt.outHeight >> 1;
-                while (nextWidth>w && nextHeight>h) {
-                    sampleSize <<= 1;
-                    nextWidth >>= 1;
-                    nextHeight >>= 1;
-                }
-
-                opt.inSampleSize = sampleSize;
-                opt.inJustDecodeBounds = false;
-                Bitmap b = BitmapFactory.decodeFileDescriptor(
-                fd.getFileDescriptor(), null, opt);
-
-                if (b != null) {
+                bitmap = res.loadThumbnail(uri,new Size(w, h), null);
+                if (bitmap != null){
                     // rescale to exactly the size we need
-                    if (opt.outWidth != w || opt.outHeight != h) {
-                        Bitmap tmp = Bitmap.createScaledBitmap(b, w, h, true);
-                        if (tmp != b) b.recycle();
-                        b = tmp;
+                    if (bitmap.getWidth() != w || bitmap.getHeight() != h){
+                        Bitmap tmp = Bitmap.createScaledBitmap(bitmap, w, h, true);
+                        if(tmp != bitmap){
+                            bitmap.recycle();
+                            Log.v(TAG," getScaledBitmap bitmap recycled");
+                        }
+                        bitmap = tmp;
                     }
                 }
-                return b;
-            } catch (FileNotFoundException e) {
-                if (V) {
-                    e.printStackTrace();
-                }
-                Log.e(TAG, "getScaledBitmap: File not found");
-            } finally {
-                try {
-                    if (fd != null)
-                        fd.close();
-                } catch (IOException e) {
-                    Log.e(TAG, "getScaledBitmap: exception in close file");
-                }
+            } catch (IOException e) {
+                Log.w(TAG, "getScaledBitmap  " + e.toString());
+                e.printStackTrace();
             }
         }
-        Log.d(TAG, "Exit getScaledBitmap");
-        return null;
+        if (D) Log.d(TAG, "Exit getScaledBitmap");
+        return bitmap;
     }
 
-    private String getArtHandleFromAlbum (String albumName) {
-        String artHandle = null;
-        String where = MediaStore.Audio.Media.ALBUM + "=?";
+    private long getArtHandleFromAlbum (String albumName) {
+        long artHandle = -1;
         String whereVal [] = { albumName };
-        String orderBy = MediaStore.Audio.Albums.DEFAULT_SORT_ORDER;
-        Uri uriAudioMedia = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
-        String[] cursorCols = new String[] {
-                MediaStore.Audio.Media._ID,
-                MediaStore.Audio.Media.ALBUM_ID,
-        };
         Cursor cursor = null;
-        if (D) Log.d(TAG, "Enter getArtHandleFromAlbum :" + albumName);
+        if (D) Log.d(TAG, "getArtHandleFromAlbum :" + albumName);
         try {
-            cursor = mContext.getContentResolver().query(uriAudioMedia,
-                    cursorCols, where, whereVal, orderBy);
-            mArtPath=""; mAlbumUriId=-1;
-            boolean isAlbumFound = false;
+            cursor = mContext.getContentResolver().query(URI_ALBUM,
+                    COL_ALBUM, WHERE, whereVal, ORDER_BY);
             if ((cursor != null) && cursor.moveToFirst()) {
-                do {
-                    mAlbumId = cursor.getLong(0);
-                    String albumPath = getAlbumPath(mAlbumId);
-                    if (!TextUtils.isEmpty(albumPath)) {
-                        mArtPath = albumPath;
-                        mAlbumUriId = cursor.getLong(1);
-                        artHandle = mAlbumUriId + "";
-                        isAlbumFound = true;
-                    }
-                } while (!isAlbumFound && cursor.moveToNext());
+                artHandle =  cursor.getLong(1);
+                if ( !isAlbumArtPresent(artHandle) ) {
+                    artHandle = -1;
+                }
             }
-            if (V) Log.v(TAG, "albumId :" + mAlbumId + " artHandle :" + artHandle
-                    + " mArtPath :" + mArtPath + " isAlbumFound: " + isAlbumFound);
-        } catch (IllegalArgumentException | SQLiteException e) {
-            Log.e(TAG, "getArtHandleFromAlbum: exception = " + e);
+            if (V) Log.v(TAG," artHandle :" + artHandle);
+        } catch (SQLiteException e) {
+            Log.e(TAG, "getArtHandleFromAlbum: " + e);
         } finally {
             if (cursor != null)
                 cursor.close();
@@ -319,28 +280,23 @@ public class AvrcpBipRspParser {
         return artHandle;
     }
 
-    private String getImgHandleFromArtHandle(String artHandle) {
+    private String getImgHandleFromArtHandle(long artHandle) {
         if (V) Log.v(TAG, "getImgHandleFromArtHandle: artHandle :"
-                + artHandle+" map : " + mArtHandleMap);
-        if (mArtHandleMap.containsKey(artHandle) == false) {
+                + artHandle +" map : " + mArtHandleMap);
+        if (mArtHandleMap.containsKey(artHandle)) {
+            return mArtHandleMap.get(artHandle);
+        } else {
             Random rnd = new Random();
             int val = rnd.nextInt(MAX_IMG_HANDLE);
             String imgHandle = String.format("%07d", val);
             if (V) Log.v(TAG,"imgHandle = " + imgHandle);
             AvrcpBipRspCoverArtAttributes coverArtAttributes = new AvrcpBipRspCoverArtAttributes();
-            coverArtAttributes.setAlbumId(mAlbumId);
-            coverArtAttributes.setArtPath(mArtPath);
-            coverArtAttributes.setAlbumUriId(mAlbumUriId);
-            if (V) Log.v(TAG,"getImgHandleFromArtHandle: storing artPath = " +
-                mArtPath + " and albumID = " + mAlbumId+ " for imgHandle = " +
-                imgHandle);
+            coverArtAttributes.setAlbumId(artHandle);
+            if (V) Log.v(TAG,"getImgHandleFromArtHandle imgHandle :"
+                + imgHandle);
             mCoverArtAttributesMap.put(imgHandle, coverArtAttributes);
             mArtHandleMap.put(artHandle, imgHandle);
             return imgHandle;
-        } else {
-            if (V) Log.v(TAG,"entry already present in map, imgHandle = " +
-                mArtHandleMap.get(artHandle));
-            return mArtHandleMap.get(artHandle);
         }
     }
 
@@ -351,103 +307,54 @@ public class AvrcpBipRspParser {
             Log.e(TAG, "updateExifHeader artAttributes null");
             return;
         }
-
-        Log.d(TAG, "Enter updateExifHeader");
-        String artPath = artAttributes.getArtPath();
-
-        if (artPath == null) {
-            Log.e(TAG," updateExifHeader artPath null");
-            return;
-        }
-        Log.e(TAG," artPath :"+artPath+" mTmpFilePath :"+mTmpFilePath);
         try {
-            ExifInterface oldexif = new ExifInterface(artPath);
             ExifInterface newexif = new ExifInterface(mTmpFilePath);
-            if (oldexif == null || newexif == null) {
-                Log.e(TAG,"updateExifHeader: oldexif = " + oldexif +
-                    " newexif = " + newexif);
-                return;
-            }
-
             //Need to update it, with your new height width
             newexif.setAttribute(ExifInterface.TAG_IMAGE_WIDTH, width+"");
             newexif.setAttribute(ExifInterface.TAG_IMAGE_LENGTH, height+"");
-
-            // copy other fileds if present as it is
-            String dateTime = oldexif.getAttribute(ExifInterface.TAG_DATETIME);
-            String flash = oldexif.getAttribute(ExifInterface.TAG_FLASH);
-            String make = oldexif.getAttribute(ExifInterface.TAG_MAKE);
-            String model = oldexif.getAttribute(ExifInterface.TAG_MODEL);
-            String orientation = oldexif.getAttribute(ExifInterface.TAG_ORIENTATION);
-            if (V) Log.v(TAG, "updateExifHeader dateTime:" + dateTime + ", flash:" + flash
-                    + " ,make:" + make + ", model:" + model + ", orientation:" + orientation);
-            if (dateTime != null) {
-                newexif.setAttribute(ExifInterface.TAG_DATETIME,dateTime);
-            }
-            if (flash != null) {
-                newexif.setAttribute(ExifInterface.TAG_FLASH,flash);
-            }
-            if (make != null) {
-                newexif.setAttribute(ExifInterface.TAG_MAKE,make);
-            }
-            if (model != null) {
-                newexif.setAttribute(ExifInterface.TAG_MODEL,model);
-            }
-            if (orientation != null) {
-                newexif.setAttribute(ExifInterface.TAG_ORIENTATION,orientation);
-            }
             newexif.saveAttributes();
         } catch (IOException e) {
             Log.e(TAG,"readImgProperties: exception" + e);
         }
-        Log.d(TAG, "Exit updateExifHeader");
      }
 
     private void readImgProperties(String imgHandle) {
         if (D) Log.d(TAG,"readImgProperties");
         AvrcpBipRspCoverArtAttributes artAttributes = mCoverArtAttributesMap.get(imgHandle);
-
-        if (artAttributes == null) {
-            if (D) Log.d(TAG,"readImgProperties artAttributes null ");
+        ContentResolver cr = mContext.getContentResolver();
+        if (artAttributes == null || cr == null) {
+            if (D) Log.d(TAG,"readImgProperties  artAttributes "
+                + artAttributes + " cr :" + cr);
             return;
         }
-
+        Bitmap bitMap = null;
+        try {
+            bitMap = cr.loadThumbnail(artAttributes.getmAlbumUri(),
+                    new Size(MAX_SUPPORTED_WIDTH, MAX_SUPPORTED_HEIGHT),null);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        if (bitMap == null) {
+            Log.w(TAG,"readImgProperties bitMap null ");
+            return;
+        }
+        int w = bitMap.getWidth();
+        int h = bitMap.getHeight();
+        String size = Integer.toString(bitMap.getByteCount());
+        bitMap.recycle();
+        bitMap = null;
         long albumId = artAttributes.getAlbumId();
-        String artPath = artAttributes.getArtPath();
-        long albumUriId = artAttributes.getAlbumUriId();
-        if (V) Log.v(TAG,"artPath = " + artPath);
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inJustDecodeBounds = true;
-        //Returns null, sizes are in the options variable
-        BitmapFactory.decodeFile(artPath, options);
-        if (D) Log.d(TAG,"width = " + options.outWidth + " height = " + options.outHeight
-            + " type = " + options.outMimeType);
         AvrcpBipRspCoverArtAttributes coverArtAttributes = new AvrcpBipRspCoverArtAttributes();
         coverArtAttributes.setAlbumId(albumId);
-        coverArtAttributes.setArtPath(artPath);
-        coverArtAttributes.setAlbumUriId(albumUriId);
-        coverArtAttributes.setWidth(options.outWidth);
-        coverArtAttributes.setHeight(options.outHeight);
-        /*Get the cover art file size */
-        File f = new File(artPath);
-        if (f != null && f.isFile() && f.exists()) {
-            if (D) Log.d(TAG, "readImgProperties: File Size = " + f.length());
-            coverArtAttributes.setNativeSize(Objects.toString(f.length(), null));
-        }
-        if (options.outMimeType != null) {
-            coverArtAttributes.setNativeEncoding(
-            options.outMimeType.substring(options.outMimeType.lastIndexOf("/") + 1)
-            .toUpperCase());
-        } else {
-            // DEFAULT encoding as JPEG
-            coverArtAttributes.setNativeEncoding("JPEG");
-        }
-        //coverArtAttributes.setNativeSize(Integer.toString(size));
-        coverArtAttributes.setNativePixel(options.outWidth + "*" + options.outHeight);
-        if (V) Log.v(TAG,"storing artPath = " + artPath + " and albumID = " + albumId +
-            " for imgHandle = " + imgHandle);
+        coverArtAttributes.setWidth(w);
+        coverArtAttributes.setHeight(h);
+        // DEFAULT encoding as JPEG
+        coverArtAttributes.setNativeEncoding("JPEG");
+        coverArtAttributes.setNativeSize(size);
+        coverArtAttributes.setNativePixel(w + "*" + h);
         mCoverArtAttributesMap.put(imgHandle, coverArtAttributes);
-        Log.d(TAG,"Exit readImgProperties");
+        if (V) Log.v(TAG," albumId : " + albumId + " imgHandle : "
+                + imgHandle + " w : " + w + " H : " + h + " s: " + size);
     }
 
     private class AvrcpBipRspImgDescriptor {
@@ -485,12 +392,9 @@ public class AvrcpBipRspParser {
 
     private AvrcpBipRspImgDescriptor parseImgDescXml(String imgDescXml) {
         AvrcpBipRspImgDescriptor ev = null;
-
         if (imgDescXml == null)
             return ev;
-
         if (D) Log.d(TAG, "parseImgDescXml");
-
         try {
             InputStream is = new ByteArrayInputStream(imgDescXml.getBytes("UTF-8"));
             try {
@@ -582,7 +486,7 @@ public class AvrcpBipRspParser {
             /* Split the strings before and after "-" */
             String minRange = imgDesc.mPixel.substring(0, imgDesc.mPixel.indexOf("-"));
             String maxRange = imgDesc.mPixel.substring(imgDesc.mPixel.indexOf("-") + 1);
-            Log.e(TAG, "minRange: " +  minRange + " maxRange: " + maxRange);
+            Log.d(TAG, "minRange: " +  minRange + " maxRange: " + maxRange);
             try {
                 minWidth = Integer.parseInt(minRange.substring(0,
                     minRange.indexOf("*")));
@@ -649,15 +553,13 @@ public class AvrcpBipRspParser {
 
     boolean getImgThumb(OutputStream out, String imgHandle) {
         boolean retVal = false;
-        if (mCoverArtAttributesMap.get(imgHandle) == null) {
+        AvrcpBipRspCoverArtAttributes artAttributes = mCoverArtAttributesMap.get(imgHandle);
+        if (artAttributes == null) {
             Log.w(TAG, "getImgThumb: imageHandle =" +  imgHandle + " is not in hashmap");
             return false;
         }
-        long albumId = mCoverArtAttributesMap.get(imgHandle).getAlbumId();
-        long albumUriId = mCoverArtAttributesMap.get(imgHandle).getAlbumUriId();
-        if (D) Log.d(TAG,"getImgThumb: getScaledBitmap albumId :" + albumId);
-        Bitmap bm = getScaledBitmap(albumUriId, BIP_THUMB_WIDTH, BIP_THUMB_HEIGHT);
-        if (D) Log.d(TAG,"getImgThumb: getScaledBitmap -");
+        Bitmap bm = getScaledBitmap(artAttributes.getmAlbumUri(),
+                BIP_THUMB_WIDTH, BIP_THUMB_HEIGHT);
         FileOutputStream tmp = null;
         FileInputStream tmp1 = null;
         if (bm != null) {
@@ -730,7 +632,7 @@ public class AvrcpBipRspParser {
                 }
             }
         }
-        if (D) Log.d(TAG,"getImg: returning " + retVal);
+        if (D) Log.d(TAG, "getImgThumb: returning " + retVal);
         return retVal;
     }
 
@@ -815,11 +717,9 @@ public class AvrcpBipRspParser {
                 return retVal;
         }
 
-        long albumId = mCoverArtAttributesMap.get(imgHandle).getAlbumId();
-        long albumUriId = mCoverArtAttributesMap.get(imgHandle).getAlbumUriId();
-        if (D) Log.d(TAG,"getImg: getScaledBitmap albumId : "+albumId);
-        Bitmap bm = getScaledBitmap(albumUriId, width, height);
-        if (D) Log.d(TAG,"getImg: getScaledBitmap -");
+        Uri uri = mCoverArtAttributesMap.get(imgHandle).getmAlbumUri();
+        if (D) Log.d(TAG,"getImg: getScaledBitmap ");
+        Bitmap bm = getScaledBitmap(uri, width, height);
         if (bm != null) {
             try {
                 // Use temp file as ExifInterface requires absolute path of storage
@@ -919,8 +819,8 @@ public class AvrcpBipRspParser {
 
     String getImgHandle(String albumName) {
         try {
-            String artHandle = getArtHandleFromAlbum(albumName);
-            if (artHandle != null) {
+            long artHandle = getArtHandleFromAlbum(albumName);
+            if (artHandle != -1) {
                 String imgHandle = getImgHandleFromArtHandle(artHandle);
                 if (D) Log.d(TAG,"getImgHandle: imgHandle = " + imgHandle);
                 return imgHandle;
@@ -932,9 +832,8 @@ public class AvrcpBipRspParser {
         return "";
     }
 
-    String getAlbumName (String songName) {
+    private String getAlbumName (String songName) {
         String albumName = null;
-        Uri uri = Uri.parse("content://media/external/audio/media");
         String[] mCursorCols = new String[] {
                         MediaStore.Audio.Media._ID,
                         MediaStore.Audio.Media.ALBUM,
@@ -946,17 +845,12 @@ public class AvrcpBipRspParser {
 
         String queryValues[]= {"1", songName};
 
-        String orderBy = MediaStore.Audio.Albums.DEFAULT_SORT_ORDER;
-
         Cursor cursor = null;
 
-        Log.d(TAG, "Enter getAlbumName");
         try {
             cursor = mContext.getContentResolver().query(
-            uri, mCursorCols,
-            where, queryValues, orderBy);
-
-            if (V) Log.v(TAG, "getAlbumName");
+            URI_MEDIA, mCursorCols,
+            where, queryValues, ORDER_BY);
             if (cursor != null && cursor.moveToFirst()) {
                 albumName = cursor.getString(1);
             }
@@ -966,7 +860,7 @@ public class AvrcpBipRspParser {
             if (cursor != null)
                 cursor.close();
         }
-        Log.d(TAG, "albumName = " + albumName);
+        if (D) Log.d(TAG, "albumName : " + albumName);
         return albumName;
     }
 
@@ -985,7 +879,7 @@ public class AvrcpBipRspParser {
         }
         StringWriter sw = new StringWriter();
         XmlSerializer xmlMsgElement = new FastXmlSerializer();
-        // contruct the XML tag for a single msg in the msglisting
+        // construct the XML tag for a single msg in the msglisting
         try {
             xmlMsgElement.setOutput(sw);
             xmlMsgElement.startDocument("UTF-8", true);
@@ -1027,23 +921,37 @@ public class AvrcpBipRspParser {
         if (V) Log.v(TAG," delTmpFile :" + f.getAbsolutePath() + " isDeleted :" + isDeleted);
     }
 
-    private String getAlbumPath(long albumId) {
-        String finalPath = "";
-        try {
-            if (TextUtils.isEmpty(basePath)) {
-                basePath = Environment.getExternalStorageDirectory().getPath() + File.separator
-                + Environment.DIRECTORY_MUSIC + File.separator + ".thumbnails" + File.separator;
-            }
-            String path = basePath + albumId + ".jpg";
-            File f = new File(path);
-            if (f.exists()) {
-                finalPath = new String(path);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+    private void setTmpPath(String tag) {
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            mTmpFilePath = mContext.getExternalFilesDir(null).getAbsolutePath()
+                + "/tmpBtBip" + tag.replaceAll(":","") + ".jpg";
+            if (V) Log.v(TAG," mTmpFilePath :" + mTmpFilePath);
+        } else {
+            Log.e(TAG, "getStorageDirectory state=" + Environment.getExternalStorageState());
         }
-        if (V) Log.v(TAG, " getAlbumPath finalPath " + finalPath);
-        return finalPath;
+    }
+
+    private boolean isAlbumArtPresent(long albumId){
+        boolean albumFound = false;
+        Uri albumUri = ContentUris.withAppendedId(URI_ALBUM, albumId);
+        Bitmap bitmap = null;
+        try {
+            bitmap = mContext.getContentResolver().loadThumbnail(albumUri,
+                    new Size(MIN_SUPPORTED_HEIGHT, MIN_SUPPORTED_HEIGHT), null);
+        } catch (IOException e) {
+            if (V) {
+                e.printStackTrace();
+            } else {
+                if (D) Log.d(TAG," "+e.toString());
+            }
+        }
+        if (bitmap != null) {
+            albumFound = true;
+            bitmap.recycle();
+            bitmap = null;
+        }
+        if (V) Log.v(TAG, " isAlbumArtPresent " + albumFound);
+        return  albumFound;
     }
 
 }

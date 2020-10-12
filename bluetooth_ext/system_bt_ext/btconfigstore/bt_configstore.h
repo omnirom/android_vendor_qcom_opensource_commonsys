@@ -35,11 +35,26 @@
 #include <vector>
 
 #define BT_CONFIG_STORE_INTERFACE_STRING "btConfigStoreInterface"
+#define MAX_SIZE_OF_SOC_ADD_ON_FEATURES 245
+#define MAX_SIZE_OF_HOST_ADD_ON_FEATURES 255
+
 
 typedef struct {
   uint32_t type;
   char value[PROPERTY_VALUE_MAX];
 }vendor_property_t;
+
+typedef struct {
+  uint16_t product_id;
+  uint16_t rsp_version;
+  uint8_t feat_mask_len;
+  uint8_t features[MAX_SIZE_OF_SOC_ADD_ON_FEATURES];
+} controller_add_on_features_list_t;
+
+typedef struct {
+  uint8_t feat_mask_len;
+  uint8_t features[MAX_SIZE_OF_HOST_ADD_ON_FEATURES];
+} host_add_on_features_list_t;
 
 typedef struct {
   /** set to sizeof(bt_configstore_interface_t) */
@@ -54,9 +69,15 @@ typedef struct {
 
   /**
    *
-   * To get BT add On features
+   * To get BT controller add On features
    */
-  bool (*get_add_on_features)(add_on_features_list_t *features_list);
+  bool (*get_controller_add_on_features)(controller_add_on_features_list_t *features_list);
+
+  /**
+   *
+   * To get BT Host add On features
+   */
+  bool (*get_host_add_on_features)(host_add_on_features_list_t *features_list);
 
   /**
    * To set ANT/BT/FM Vendor Properties

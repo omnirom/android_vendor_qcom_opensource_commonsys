@@ -23,8 +23,12 @@ source_set("udrv") {
     "include",
     "uipc",
     "//",
-    "//include",
+    "//third_party/bt/include",
     "//stack/include",
     "//utils/include",
+    "//internal_include",
+    "//third_party/libchrome",
+    "//third_party/system/core/include",
+    "//third_party/bluetooth-internal/test/offtarget/stack",
   ]
 }

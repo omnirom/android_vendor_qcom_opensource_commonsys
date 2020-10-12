@@ -23,7 +23,9 @@ cc_defaults {
         "vendor/qcom/opensource/commonsys/bluetooth_ext/system_bt_ext",
         "vendor/qcom/opensource/commonsys/bluetooth_ext/vhal/include",
         "vendor/qcom/opensource/commonsys/bluetooth_ext/system_bt_ext/bta/include",
-        "vendor/qcom/opensource/commonsys/system/bt/include",
+        "vendor/qcom/opensource/commonsys/bluetooth_ext/system_bt_ext/btif/include",
+        "vendor/qcom/opensource/commonsys-intf/bluetooth/include",
+        "vendor/qcom/opensource/commonsys/system/bt/device/include",
     ],
     shared_libs: [
         "libcutils",
@@ -67,11 +69,16 @@ cc_library_static {
         "gatt/bta_gattc_api.cc",
         "gatt/bta_gattc_cache.cc",
         "gatt/bta_gattc_main.cc",
+        "gatt/bta_gattc_queue.cc",
         "gatt/bta_gattc_utils.cc",
         "gatt/bta_gatts_act.cc",
         "gatt/bta_gatts_api.cc",
         "gatt/bta_gatts_main.cc",
         "gatt/bta_gatts_utils.cc",
+        "gatt/database.cc",
+        "gatt/database_builder.cc",
+        "hearing_aid/hearing_aid.cc",
+        "hearing_aid/hearing_aid_audio_source.cc",
         "hf_client/bta_hf_client_act.cc",
         "hf_client/bta_hf_client_api.cc",
         "hf_client/bta_hf_client_at.cc",
@@ -85,12 +92,6 @@ cc_library_static {
         "hh/bta_hh_le.cc",
         "hh/bta_hh_main.cc",
         "hh/bta_hh_utils.cc",
-        "hl/bta_hl_act.cc",
-        "hl/bta_hl_api.cc",
-        "hl/bta_hl_ci.cc",
-        "hl/bta_hl_main.cc",
-        "hl/bta_hl_sdp.cc",
-        "hl/bta_hl_utils.cc",
         "hd/bta_hd_act.cc",
         "hd/bta_hd_api.cc",
         "hd/bta_hd_main.cc",
@@ -114,6 +115,10 @@ cc_library_static {
         "sys/bta_sys_main.cc",
         "sys/utl.cc",
     ],
+
+    whole_static_libs: [
+        "libaudio-hearing-aid-hw-utils_qti",
+    ],
 }
 
 // bta unit tests for target
@@ -123,7 +128,9 @@ cc_test {
     defaults: ["fluoride_bta_defaults_qti"],
     srcs: [
         "test/bta_hf_client_test.cc",
-        "test/gatt_cache_file_test.cc",
+        "test/gatt/database_builder_test.cc",
+        "test/gatt/database_builder_sample_device_test.cc",
+        "test/gatt/database_test.cc",
     ],
     shared_libs: [
         "liblog",

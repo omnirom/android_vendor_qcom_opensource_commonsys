@@ -69,6 +69,8 @@ static jmethodID method_bqrDeliver;
 static jmethodID method_devicePropertyChangedCallback;
 static jmethodID method_adapterPropertyChangedCallback;
 static jmethodID method_ssrCleanupCallback;
+static jmethodID method_whitelistedPlayersChangedCallback;
+
 
 static btvendor_interface_t *sBluetoothVendorInterface = NULL;
 static jobject mCallbacksObj = NULL;
@@ -230,6 +232,48 @@ static void adapter_vendor_properties_callback(bt_status_t status,
                                types.get(), props.get());
 }
 
+static void whitelisted_players_properties_callback(bt_status_t status,
+                          int num_properties,
+                          bt_vendor_property_t *properties) {
+  CallbackEnv sCallbackEnv(__func__);
+  if (!sCallbackEnv.valid()) return;
+  ALOGE("%s: Status is: %d, Properties: %d", __func__, status, num_properties);
+  if (status != BT_STATUS_SUCCESS) {
+    ALOGE("%s: Status %d is incorrect", __func__, status);
+    return;
+  }
+  ScopedLocalRef<jbyteArray> val(
+      sCallbackEnv.get(),
+      (jbyteArray)sCallbackEnv->NewByteArray(num_properties));
+  if (!val.get()) {
+    ALOGE("%s: Error allocating byteArray", __func__);
+    return;
+  }
+  ScopedLocalRef<jclass> mclass(sCallbackEnv.get(),
+                                sCallbackEnv->GetObjectClass(val.get()));
+  ScopedLocalRef<jobjectArray> props(
+      sCallbackEnv.get(),
+      sCallbackEnv->NewObjectArray(num_properties, mclass.get(), NULL));
+  if (!props.get()) {
+    ALOGE("%s: Error allocating object Array for properties", __func__);
+    return;
+  }
+  ScopedLocalRef<jintArray> types(
+      sCallbackEnv.get(), (jintArray)sCallbackEnv->NewIntArray(num_properties));
+  if (!types.get()) {
+    ALOGE("%s: Error allocating int Array for values", __func__);
+    return;
+  }
+  jintArray typesPtr = types.get();
+  jobjectArray propsPtr = props.get();
+  if (get_properties(num_properties, properties, &typesPtr, &propsPtr) < 0) {
+    return;
+  }
+  sCallbackEnv->CallVoidMethod(mCallbacksObj,
+                               method_whitelistedPlayersChangedCallback,
+                               types.get(), props.get());
+}
+
 static void remote_device_properties_callback(bt_status_t status,
                           RawAddress *bd_addr, int num_properties,
                           bt_vendor_property_t *properties) {
@@ -289,6 +333,7 @@ static btvendor_callbacks_t sBluetoothVendorCallbacks = {
     NULL,
     adapter_vendor_properties_callback,
     ssr_cleanup_callback,
+    whitelisted_players_properties_callback,
 };
 
 static void classInitNative(JNIEnv* env, jclass clazz) {
@@ -302,6 +347,8 @@ static void classInitNative(JNIEnv* env, jclass clazz) {
       clazz, "adapterPropertyChangedCallback", "([I[[B)V");
     method_ssrCleanupCallback = env->GetMethodID(
       clazz, "ssr_cleanup_callback", "()V");
+    method_whitelistedPlayersChangedCallback = env->GetMethodID(
+      clazz, "whitelistedPlayersChangedCallback", "([I[[B)V");
     ALOGI("%s: succeeds", __FUNCTION__);
 }
 
@@ -399,6 +446,22 @@ static void cleanupNative(JNIEnv *env, jobject object) {
 
 }
 
+static bool informTimeoutToHidlNative(JNIEnv *env, jobject obj) {
+
+    ALOGI("%s", __FUNCTION__);
+
+    if ((bt_configstore_lib_handle && bt_configstore_intf) ||
+        !load_bt_configstore_lib()) {
+      bt_configstore_intf->set_vendor_property(BT_PROP_STACK_TIMEOUT, "true");
+      dlclose(bt_configstore_lib_handle);
+      bt_configstore_lib_handle = NULL;
+      bt_configstore_intf = NULL;
+    } else {
+      ALOGE("%s: Failed to inform to HIDL about timeout", __FUNCTION__);
+    }
+
+    return JNI_TRUE;
+}
 
 static bool bredrcleanupNative(JNIEnv *env, jobject obj) {
 
@@ -561,6 +624,7 @@ static JNINativeMethod sMethods[] = {
     {"isSwbPmEnabledNative", "()Z", (void*) isSwbPmEnabledNative},
     {"setClockSyncConfigNative", "(ZIIIII)Z", (void*) setClockSyncConfigNative},
     {"startClockSyncNative", "()Z", (void*) startClockSyncNative},
+    {"informTimeoutToHidlNative", "()V", (void*) informTimeoutToHidlNative},
 };
 
 int load_bt_configstore_lib() {

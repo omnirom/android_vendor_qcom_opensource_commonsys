@@ -39,6 +39,7 @@
 
 #include "btm_ble_int.h"
 #include "btm_int_types.h"
+#include "l2cdefs.h"
 #include "smp_api.h"
 
 extern tBTM_CB btm_cb;
@@ -120,7 +121,7 @@ extern uint16_t btm_get_acl_disc_reason_code(void);
 extern tBTM_STATUS btm_remove_acl(const RawAddress& bd_addr,
                                   tBT_TRANSPORT transport);
 extern void btm_read_remote_features_complete(uint8_t* p);
-extern void btm_read_remote_ext_features_complete(uint8_t* p);
+extern void btm_read_remote_ext_features_complete(uint8_t* p, uint8_t evt_len);
 extern void btm_read_remote_ext_features_failed(uint8_t status,
                                                 uint16_t handle);
 extern void btm_read_remote_version_complete(uint8_t* p);
@@ -186,16 +187,14 @@ extern void btm_dev_init(void);
 extern void btm_read_local_name_timeout(void* data);
 extern void btm_read_local_name_complete(uint8_t* p, uint16_t evt_len);
 
-extern void btm_ble_add_2_white_list_complete(uint8_t status);
-extern void btm_ble_remove_from_white_list_complete(uint8_t* p,
-                                                    uint16_t evt_len);
-extern void btm_ble_clear_white_list_complete(uint8_t* p, uint16_t evt_len);
+extern void btm_ble_create_conn_cancel_complete(uint8_t* p);
 extern bool btm_ble_addr_resolvable(const RawAddress& rpa,
                                     tBTM_SEC_DEV_REC* p_dev_rec);
 extern tBTM_STATUS btm_ble_read_resolving_list_entry(
     tBTM_SEC_DEV_REC* p_dev_rec);
 extern bool btm_ble_resolving_list_load_dev(tBTM_SEC_DEV_REC* p_dev_rec);
 extern void btm_ble_resolving_list_remove_dev(tBTM_SEC_DEV_REC* p_dev_rec);
+extern bool btm_ble_resolving_list_load_devices_rpa_offload(void);
 
 /* Vendor Specific Command complete evt handler */
 extern void btm_vsc_complete(uint8_t* p, uint16_t cc_opcode, uint16_t evt_len,
@@ -205,6 +204,8 @@ extern void btm_vendor_specific_evt(uint8_t* p, uint8_t evt_len);
 extern void btm_delete_stored_link_key_complete(uint8_t* p);
 extern void btm_report_device_status(tBTM_DEV_STATUS status);
 extern void btm_notify_ssr_trigger(void);
+extern tBTM_STATUS BTM_BT_Quality_Report_VSE_Register(
+    bool is_register, tBTM_BT_QUALITY_REPORT_RECEIVER* p_bqr_report_receiver);
 
 /* Internal functions provided by btm_dev.cc
  *********************************************
@@ -263,7 +264,7 @@ extern void btm_proc_sp_req_evt(tBTM_SP_EVT event, uint8_t* p);
 extern void btm_keypress_notif_evt(uint8_t* p);
 extern void btm_simple_pair_complete(uint8_t* p);
 extern void btm_sec_link_key_notification(const RawAddress& p_bda,
-                                          uint8_t* p_link_key,
+                                          const Octet16& link_key,
                                           uint8_t key_type);
 extern void btm_sec_link_key_request(const RawAddress& p_bda);
 extern void btm_sec_pin_code_request(const RawAddress& p_bda);
@@ -281,10 +282,9 @@ extern bool btm_ble_init_pseudo_addr(tBTM_SEC_DEV_REC* p_dev_rec,
                                      const RawAddress& new_pseudo_addr);
 extern tBTM_SEC_SERV_REC* btm_sec_find_first_serv(CONNECTION_TYPE conn_type,
                                                   uint16_t psm);
-extern bool btm_ble_start_sec_check(const RawAddress& bd_addr, uint16_t psm,
-                                    bool is_originator,
-                                    tBTM_SEC_CALLBACK* p_callback,
-                                    void* p_ref_data);
+extern tL2CAP_LE_RESULT_CODE btm_ble_start_sec_check(
+    const RawAddress& bd_addr, uint16_t psm, bool is_originator,
+    tBTM_SEC_CALLBACK* p_callback, void* p_ref_data);
 
 extern tINQ_DB_ENT* btm_inq_db_new(const RawAddress& p_bda);
 

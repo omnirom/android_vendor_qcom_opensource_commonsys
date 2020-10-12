@@ -45,7 +45,7 @@ shared_library("bluetooth") {
     "//bta/sys",
     "//bta/dm",
     "//btcore/include",
-    "//include",
+    "//third_party/bt/include",
     "//stack/include",
     "//stack/l2cap",
     "//stack/a2dp",
@@ -59,10 +59,15 @@ shared_library("bluetooth") {
     "//hci/includ",
     "//vnd/include",
     "//brcm/include",
-    "//embdrv/sbc/encoder/include",
-    "//embdrv/sbc/decoder/include",
     "//utils/include",
     "//test/suite",
+    "//internal_include",
+    "//third_party/bt/embdrv/sbc/encoder/include",
+    "//third_party/bt/embdrv/sbc/decoder/include",
+    "//third_party/bluetooth_ext/vhal/include",
+    "//third_party/bluetooth_ext/system_bt_ext",
+    "//third_party/bluetooth-commonsys-intf/include",
+    "//third_party/system/core/include",
   ]
 
   deps = [
@@ -70,7 +75,7 @@ shared_library("bluetooth") {
     "//btcore",
     "//btif",
     "//device",
-    "//embdrv/sbc",
+    "//third_party/bt/embdrv/sbc",
     "//hci",
     "//osi",
     "//stack",
@@ -78,6 +83,8 @@ shared_library("bluetooth") {
     "//third_party/tinyxml2",
     "//udrv",
     "//utils",
+    "//third_party/bluetooth/libbt-logClient:libbt-logClient",
+    "//third_party/bluetooth_ext/system_bt_ext:system_bt_ext_btif"
   ]
 
   cflags_c = [

@@ -2,11 +2,11 @@
 // Bluetooth main HW module / shared library for target
 // ========================================================
 cc_library_shared {
-    name: "libcluetooth_qti",
-    owner: "qcom",
+    name: "libbluetooth_qti",
     defaults: ["fluoride_defaults_qti"],
     header_libs: ["libbluetooth_headers"],
     export_header_lib_headers: ["libbluetooth_headers"],
+    system_ext_specific: true,
     srcs: [
         // platform specific
         "bte_conf.cc",
@@ -15,7 +15,6 @@ cc_library_shared {
         "bte_logmsg.cc",
         "bte_main.cc",
         "stack_config.cc",
-        "wipower.cc"
     ],
     include_dirs: [
         "vendor/qcom/opensource/commonsys/system/bt",
@@ -34,10 +33,9 @@ cc_library_shared {
         "vendor/qcom/opensource/commonsys/system/bt/btif/co",
         "vendor/qcom/opensource/commonsys/system/bt/hci/include",
         "vendor/qcom/opensource/commonsys/system/bt/vnd/include",
-        "vendor/qcom/opensource/commonsys/system/bt/embdrv/sbc/encoder/include",
-        "vendor/qcom/opensource/commonsys/system/bt/embdrv/sbc/decoder/include",
+        "system/bt/embdrv/sbc/encoder/include",
+        "system/bt/embdrv/sbc/decoder/include",
         "vendor/qcom/opensource/commonsys/system/bt/utils/include",
-//        "vendor/qcom/opensource/commonsys/bluetooth/hal/include",
         "vendor/qcom/opensource/commonsys/bluetooth_ext/vhal/include",
         "vendor/qcom/opensource/commonsys/bluetooth_ext/system_bt_ext"
     ],
@@ -45,23 +43,27 @@ cc_library_shared {
     shared_libs: [
         "android.hardware.bluetooth@1.0",
         "com.qualcomm.qti.bluetooth_audio@1.0",
+        "vendor.qti.hardware.bluetooth_audio@2.0",
         "libaudioclient",
         "libcutils",
         "libdl",
+        "libfmq",
         "libhidlbase",
-        "libhidltransport",
-        "libhwbinder",
         "liblog",
         "libprotobuf-cpp-lite",
+        "libprocessgroup",
         "libutils",
         "libtinyxml2",
         "libz",
+        "libcrypto",
+        "libbtconfigstore",
     ],
     static_libs: [
-        "libbt-sbc-decoder_qti",
-        "libbt-sbc-encoder_qti",
+        "libbt-sbc-decoder",
+        "libbt-sbc-encoder",
         "libFraunhoferAAC",
         "libudrv-uipc_qti",
+        "libg722codec_qti",
     ],
     whole_static_libs: [
         "libbt-bta_qti",
@@ -98,4 +100,7 @@ cc_library_shared {
     cflags: [
         "-DBUILDCFG",
     ],
+    sanitize: {
+        scs: true,
+    },
 }

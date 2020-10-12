@@ -33,12 +33,17 @@
 #include "btm_int.h"
 #include "btu.h"
 #include "device/include/controller.h"
+#include "hci/include/btsnoop.h"
 #include "hcimsgs.h"
 #include "l2c_api.h"
 #include "l2c_int.h"
 #include "l2cdefs.h"
+#include "stack_config.h"
 #include "osi/include/log.h"
 #include "osi/include/osi.h"
+#if (OFF_TARGET_TEST_ENABLED == TRUE)
+#include "linux_include/log/log.h"
+#endif
 
 /******************************************************************************/
 /*            L O C A L    F U N C T I O N     P R O T O T Y P E S            */
@@ -66,7 +71,7 @@ void l2c_rcv_acl_data(BT_HDR* p_msg) {
   uint8_t pkt_type;
   tL2C_LCB* p_lcb;
   tL2C_CCB* p_ccb = NULL;
-  uint16_t l2cap_len, rcv_cid, psm;
+  uint16_t l2cap_len, rcv_cid;
   uint16_t soc_log_stats_id;
 
   /* Extract the handle */
@@ -179,8 +184,6 @@ void l2c_rcv_acl_data(BT_HDR* p_msg) {
     osi_free(p_msg);
   } else if (rcv_cid == L2CAP_CONNECTIONLESS_CID) {
     /* process_connectionless_data (p_lcb); */
-    STREAM_TO_UINT16(psm, p);
-    L2CAP_TRACE_DEBUG("GOT CONNECTIONLESS DATA PSM:%d", psm);
 
 #if (L2CAP_UCD_INCLUDED == TRUE)
     /* if it is not broadcast, check UCD registration */
@@ -424,6 +427,14 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
         p_ccb->p_rcb = p_rcb;
         p_ccb->remote_cid = rcid;
 
+        if (p_rcb->psm == BT_PSM_RFCOMM) {
+          btsnoop_get_interface()->add_rfc_l2c_channel(
+              p_lcb->handle, p_ccb->local_cid, p_ccb->remote_cid);
+        } else if (p_rcb->log_packets) {
+          btsnoop_get_interface()->whitelist_l2c_channel(
+              p_lcb->handle, p_ccb->local_cid, p_ccb->remote_cid);
+        }
+
         l2c_csm_execute(p_ccb, L2CEVT_L2CAP_CONNECT_REQ, &con_info);
         break;
 
@@ -455,6 +466,15 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
           l2c_csm_execute(p_ccb, L2CEVT_L2CAP_CONNECT_RSP_PND, &con_info);
         else
           l2c_csm_execute(p_ccb, L2CEVT_L2CAP_CONNECT_RSP_NEG, &con_info);
+
+        p_rcb = p_ccb->p_rcb;
+        if (p_rcb->psm == BT_PSM_RFCOMM) {
+          btsnoop_get_interface()->add_rfc_l2c_channel(
+              p_lcb->handle, p_ccb->local_cid, p_ccb->remote_cid);
+        } else if (p_rcb->log_packets) {
+          btsnoop_get_interface()->whitelist_l2c_channel(
+              p_lcb->handle, p_ccb->local_cid, p_ccb->remote_cid);
+        }
 
         break;
 
@@ -521,7 +541,7 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
                 android_errorWriteLog(0x534e4554, "74202041");
                 return;
               }
-              STREAM_TO_UINT8(cfg_info.qos.qos_flags, p);
+              STREAM_TO_UINT8(cfg_info.qos.qos_unused, p);
               STREAM_TO_UINT8(cfg_info.qos.service_type, p);
               STREAM_TO_UINT32(cfg_info.qos.token_rate, p);
               STREAM_TO_UINT32(cfg_info.qos.token_bucket_size, p);
@@ -664,7 +684,7 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
                 android_errorWriteLog(0x534e4554, "74202041");
                 return;
               }
-              STREAM_TO_UINT8(cfg_info.qos.qos_flags, p);
+              STREAM_TO_UINT8(cfg_info.qos.qos_unused, p);
               STREAM_TO_UINT8(cfg_info.qos.service_type, p);
               STREAM_TO_UINT32(cfg_info.qos.token_rate, p);
               STREAM_TO_UINT32(cfg_info.qos.token_bucket_size, p);
@@ -802,11 +822,20 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
 
         if ((info_type == L2CAP_EXTENDED_FEATURES_INFO_TYPE) &&
             (result == L2CAP_INFO_RESP_RESULT_SUCCESS)) {
-          if (p + 4 > p_next_cmd) {
+          // Spec mandates 4 byte in Ext info rsp
+          // But some devices like WS5008, etc send only 2 bytes(excludes unused/reserved 2 bytes)
+          // hence process ext info rsp if it have minimum 2 bytes to have better IOT experience.
+          L2CAP_TRACE_WARNING("L2CAP - L2CAP_CMD_INFO_RSP p= %p , p_next_cmd: %p", p, p_next_cmd);
+          if (p + 2 > p_next_cmd) {
             android_errorWriteLog(0x534e4554, "74202041");
+            L2CAP_TRACE_WARNING("L2CAP - wrong info rsp parameters, disconnect ACL");
+            btm_sec_disconnect(p_lcb->handle, HCI_ERR_ILLEGAL_PARAMETER_FMT);
             return;
+          } else if (p + 2 == p_next_cmd) {
+            STREAM_TO_UINT16(p_lcb->peer_ext_fea, p);
+          } else {
+            STREAM_TO_UINT32(p_lcb->peer_ext_fea, p);
           }
-          STREAM_TO_UINT32(p_lcb->peer_ext_fea, p);
 
 #if (L2CAP_NUM_FIXED_CHNLS > 0)
           if (p_lcb->peer_ext_fea & L2CAP_EXTFEA_FIXED_CHNLS) {
@@ -821,7 +850,20 @@ static void process_l2cap_cmd(tL2C_LCB* p_lcb, uint8_t* p, uint16_t pkt_len) {
 #if (L2CAP_NUM_FIXED_CHNLS > 0)
         if (info_type == L2CAP_FIXED_CHANNELS_INFO_TYPE) {
           if (result == L2CAP_INFO_RESP_RESULT_SUCCESS) {
-            memcpy(p_lcb->peer_chnl_mask, p, L2CAP_FIXED_CHNL_ARRAY_SIZE);
+            uint16_t info_len;
+            if (p + L2CAP_FIXED_CHNL_ARRAY_SIZE > p_next_cmd) {
+              android_errorWriteLog(0x534e4554, "111215173");
+              L2CAP_TRACE_WARNING("L2CAP - wrong info rsp parameters of fixed channels type");
+              if(p > p_next_cmd){
+                info_len = 0;
+              } else {
+                info_len = p_next_cmd - p;
+              }
+            } else {
+              info_len = L2CAP_FIXED_CHNL_ARRAY_SIZE;
+            }
+            L2CAP_TRACE_DEBUG("fixed channels info length %d", info_len);
+            memcpy(p_lcb->peer_chnl_mask, p, info_len);
           }
 
           l2cu_process_fixed_chnl_resp(p_lcb);
@@ -970,6 +1012,13 @@ void l2c_init(void) {
   CHECK(l2cb.rcv_pending_q != NULL);
 
   l2cb.receive_hold_timer = alarm_new("l2c.receive_hold_timer");
+
+  l2cb.cert_failure =
+    stack_config_get_interface()->get_pts_l2cap_le_insuff_enc_result();
+  if (l2cb.cert_failure) {
+    L2CAP_TRACE_ERROR("%s PTS FAILURE MODE IN EFFECT (CASE %d) ", __func__,
+      l2cb.cert_failure);
+  }
 }
 
 void l2c_free(void) {

@@ -40,8 +40,10 @@
 #include "l2c_int.h"
 #include "osi/include/osi.h"
 #include "osi/include/thread.h"
+#include "stack/gatt/connection_manager.h"
 
 #include "gatt_int.h"
+#include "hci/include/vendor.h"
 
 extern thread_t* bt_workqueue_thread;
 
@@ -66,6 +68,7 @@ extern thread_t* bt_workqueue_thread;
 
 static void btm_decode_ext_features_page(uint8_t page_number,
                                          const BD_FEATURES p_features);
+static void BTM_BT_Quality_Report_VSE_CBack(uint8_t length, uint8_t* p_stream);
 
 /*******************************************************************************
  *
@@ -177,12 +180,14 @@ static void reset_complete(void* result) {
   btm_cb.btm_inq_vars.page_scan_type = HCI_DEF_SCAN_TYPE;
 
   btm_cb.ble_ctr_cb.conn_state = BLE_CONN_IDLE;
-  btm_cb.ble_ctr_cb.bg_conn_type = BTM_BLE_CONN_NONE;
-  gatt_reset_bgdev_list();
+  connection_manager::reset(true);
 
   btm_pm_reset();
 
   l2c_link_processs_num_bufs(controller->get_acl_buffer_count_classic());
+
+  // setup the random number generator
+  std::srand(std::time(nullptr));
 
 #if (BLE_PRIVACY_SPT == TRUE)
   /* Set up the BLE privacy settings */
@@ -190,8 +195,8 @@ static void reset_complete(void* result) {
       controller->get_ble_resolving_list_max_size() > 0) {
     btm_ble_resolving_list_init(controller->get_ble_resolving_list_max_size());
     /* set the default random private address timeout */
-    btsnd_hcic_ble_set_rand_priv_addr_timeout(BTM_BLE_PRIVATE_ADDR_INT_MS /
-                                              1000);
+    btsnd_hcic_ble_set_rand_priv_addr_timeout(
+        btm_get_next_private_addrress_interval_ms() / 1000);
   }
 #endif
 
@@ -269,6 +274,33 @@ void BTM_SetWifiState(bool status) {
  ******************************************************************************/
 bool BTM_GetWifiState(void) {
   return btm_cb.is_wifi_connected;
+}
+
+/*******************************************************************************
+ *
+ * Function         BTM_SetPowerBackOffState
+ *
+ * Description      This function set PowerBackOff state.
+ *
+ * Returns          void
+ *
+ ******************************************************************************/
+void BTM_SetPowerBackOffState(bool status) {
+  btm_cb.is_power_backoff = status;
+  BTM_TRACE_WARNING ("btm_cb.is_power_backoff = %d ", btm_cb.is_power_backoff);
+}
+
+/*******************************************************************************
+ *
+ * Function         BTM_GetPowerBackOffState
+ *
+ * Description      This function returns PowerBackOffState status.
+ *
+ * Returns          PowerBackOffState status
+ *
+ ******************************************************************************/
+bool BTM_GetPowerBackOffState(void) {
+  return btm_cb.is_power_backoff;
 }
 
 /*******************************************************************************
@@ -835,7 +867,13 @@ void btm_vendor_specific_evt(uint8_t* p, uint8_t evt_len) {
       (*btm_cb.devcb.p_vnd_iot_info_cb)(evt_len, pp);
       return;
     }
-  }
+  } else if (HCI_BT_SOC_CRASHED_OGF == vse_subcode) {
+      STREAM_TO_UINT8 (vse_subcode, pp);
+      if (HCI_BT_SOC_CRASHED_OCF == vse_subcode) {
+        decode_crash_reason(pp, (evt_len - 2));
+        return;
+      }
+   }
 
   BTM_TRACE_DEBUG("BTM Event: Vendor Specific event from controller");
 
@@ -843,6 +881,50 @@ void btm_vendor_specific_evt(uint8_t* p, uint8_t evt_len) {
     if (btm_cb.devcb.p_vend_spec_cb[i])
       (*btm_cb.devcb.p_vend_spec_cb[i])(evt_len, p);
   }
+}
+
+char *get_primary_reason_str(host_crash_reason_e reason)
+{
+  int i = 0;
+  for(; i < (int)(sizeof(primary_crash_reason)/sizeof(primary_reason)); i++) {
+    if (primary_crash_reason[i].reason == reason)
+      return primary_crash_reason[i].reasonstr;
+  }
+  return NULL;
+}
+
+char *get_secondary_reason_str(soc_crash_reason_e reason)
+{
+  int i = 0;
+  for(; i < (int)(sizeof(secondary_crash_reason)/sizeof(secondary_reason)); i++) {
+    if (secondary_crash_reason[i].reason == reason)
+      return secondary_crash_reason[i].reasonstr;
+  }
+  return NULL;
+}
+
+void decode_crash_reason(uint8_t* p, uint8_t evt_len)
+{
+  uint16_t primary_reason;
+  uint16_t secondary_reason;
+  uint8_t pp[HCI_CRASH_MESSAGE_SIZE];
+
+  BTM_TRACE_ERROR("BTM Event: Vendor Specific crash event from controller");
+
+  /* Crash reason frame formnat
+   * Primary crash reason (2 bytes) | Secondary crash reason (2 bytes) | time stamp
+   */
+  STREAM_TO_UINT16(primary_reason, p);
+  STREAM_TO_UINT16(secondary_reason, p);
+
+  evt_len = evt_len - 4;
+  memcpy(pp, p, evt_len);
+  pp[evt_len] = '\0';
+  BTM_TRACE_ERROR("%s: PrimaryCrashReason:%s", __func__,
+                  get_primary_reason_str((host_crash_reason_e)primary_reason));
+  BTM_TRACE_ERROR("%s: SecondaryCrashReason:%s at time %s", __func__,
+                  get_secondary_reason_str((soc_crash_reason_e)secondary_reason),
+                  (char *)pp);
 }
 
 /*******************************************************************************
@@ -891,6 +973,61 @@ void btm_enable_soc_iot_info_report(bool enable) {
   }
 
   BTM_VendorSpecificCommand(HCI_VS_HOST_LOG_OPCODE, p_param - param, param, NULL);
+}
+
+/*******************************************************************************
+ **
+ ** Function       btm_enable_link_lpa_enh_pwr_ctrl_cmpl
+ **
+ ** Description    btm_enable_link_lpa_enh_pwr_ctrl VSC complete event handler
+ **
+ ** Returns        void
+ **
+ ******************************************************************************/
+static void btm_enable_link_lpa_enh_pwr_ctrl_cmpl(tBTM_VSC_CMPL *param)
+{
+  uint8_t *p = param->p_param_buf, status;
+  uint16_t evt_len = param->param_len;
+
+  /* Check status of command complete event */
+  CHECK(evt_len > 0);
+  status = *p;
+
+  if (evt_len == HCI_VS_ENABLE_LPA_CONTROL_RES_PARAM_LEN) {
+    BTM_TRACE_DEBUG("%s: opcode:%x, subopcode:%x, status:%d, handle: %04x", __func__,
+            param->opcode, *(p+1), *p, *(uint16_t *)(p+2));
+  } else {
+    BTM_TRACE_DEBUG("%s: opcode:%x, status:%d", __func__, param->opcode, status);
+    if (status == HCI_ERR_ILLEGAL_COMMAND) {
+      BTM_TRACE_DEBUG("controller not support the feature");
+    }
+  }
+}
+
+/*******************************************************************************
+ **
+ ** Function        btm_enable_link_lpa_enh_pwr_ctrl
+ **
+ ** Description     enable/disable lpa enhanced power control
+ **                 on completion btm_enable_link_lpa_enh_pwr_ctrl_cmpl callback
+ **                 would be called
+ **
+ ** Returns         void
+ **
+ ******************************************************************************/
+void btm_enable_link_lpa_enh_pwr_ctrl(uint16_t hci_handle, bool enable)
+{
+  uint8_t param[4] = {0};
+  uint8_t *p_param = param;
+
+  BTM_TRACE_DEBUG("%s, hci_handle=%d, enable=%d", __func__, hci_handle, enable);
+
+  UINT8_TO_STREAM(p_param, HCI_VS_ENABLE_LPA_CONTROL_FOR_CONN_HANDLE);
+  UINT16_TO_STREAM(p_param, hci_handle);
+  UINT8_TO_STREAM(p_param, enable ? 1 : 0);
+
+  BTM_VendorSpecificCommand(HCI_VS_LINK_POWER_CTRL_REQ_OPCODE,
+      (p_param - param), param, btm_enable_link_lpa_enh_pwr_ctrl_cmpl);
 }
 
 /*******************************************************************************
@@ -1072,4 +1209,74 @@ void btm_notify_ssr_trigger(void) {
     (*btm_cb.devcb.p_ssr_cb)();
     return;
   }
+}
+
+/*******************************************************************************
+ * Function         BTM_BT_Quality_Report_VSE_CBack
+ *
+ * Description      Callback invoked on receiving of Vendor Specific Events.
+ *                  This function will call registered BQR report receiver if
+ *                  Bluetooth Quality Report sub-event is identified.
+ *
+ * Parameters:      length - Lengths of all of the parameters contained in the
+ *                    Vendor Specific Event.
+ *                  p_stream - A pointer to the quality report which is sent
+ *                    from the Bluetooth controller via Vendor Specific Event.
+ *
+ ******************************************************************************/
+static void BTM_BT_Quality_Report_VSE_CBack(uint8_t length, uint8_t* p_stream) {
+  if (length == 0) {
+    LOG(WARNING) << __func__ << ": Lengths of all of the parameters are zero.";
+    return;
+  }
+
+  uint8_t sub_event = 0;
+  STREAM_TO_UINT8(sub_event, p_stream);
+  length--;
+
+  if (sub_event == HCI_VSE_SUBCODE_BQR_SUB_EVT) {
+    LOG(INFO) << __func__
+              << ": BQR sub event, report length: " << std::to_string(length);
+
+    if (btm_cb.p_bqr_report_receiver == nullptr) {
+      LOG(WARNING) << __func__ << ": No registered report receiver.";
+      return;
+    }
+
+    btm_cb.p_bqr_report_receiver(length, p_stream);
+  }
+}
+
+/*******************************************************************************
+ *
+ * Function         BTM_BT_Quality_Report_VSE_Register
+ *
+ * Description      Register/Deregister for Bluetooth Quality Report VSE sub
+ *                  event Callback.
+ *
+ * Parameters:      is_register - True/False to register/unregister for VSE.
+ *                  p_bqr_report_receiver - The receiver for receiving Bluetooth
+ *                    Quality Report VSE sub event.
+ *
+ ******************************************************************************/
+tBTM_STATUS BTM_BT_Quality_Report_VSE_Register(
+    bool is_register, tBTM_BT_QUALITY_REPORT_RECEIVER* p_bqr_report_receiver) {
+  tBTM_STATUS retval =
+      BTM_RegisterForVSEvents(BTM_BT_Quality_Report_VSE_CBack, is_register);
+
+  if (retval != BTM_SUCCESS) {
+    LOG(WARNING) << __func__ << ": Fail to (un)register VSEvents: " << retval
+                 << ", is_register: " << (is_register);
+    return retval;
+  }
+
+  if (is_register) {
+    btm_cb.p_bqr_report_receiver = p_bqr_report_receiver;
+  } else {
+    btm_cb.p_bqr_report_receiver = nullptr;
+  }
+
+  LOG(INFO) << __func__ << ": Success to (un)register VSEvents."
+            << " is_register: " << (is_register);
+  return retval;
 }

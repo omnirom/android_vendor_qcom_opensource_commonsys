@@ -268,6 +268,7 @@
 #define HCI_READ_BD_ADDR (0x0009 | HCI_GRP_INFORMATIONAL_PARAMS)
 #define HCI_READ_DATA_BLOCK_SIZE (0x000A | HCI_GRP_INFORMATIONAL_PARAMS)
 #define HCI_READ_LOCAL_SUPPORTED_CODECS (0x000B | HCI_GRP_INFORMATIONAL_PARAMS)
+#define HCI_READ_LOCAL_SIMPLE_PAIRING_OPTIONS (0x000C | HCI_GRP_INFORMATIONAL_PARAMS)
 
 #define HCI_INFORMATIONAL_CMDS_FIRST HCI_READ_LOCAL_VERSION_INFO
 #define HCI_INFORMATIONAL_CMDS_LAST HCI_READ_LOCAL_SUPPORTED_CODECS
@@ -420,10 +421,13 @@
 /* subopcode for enable/disable PL10 adaptive control */
 #define HCI_VS_ENABLE_HPA_CONTROL_FOR_CONN_HANDLE  0x04
 #define HCI_VS_DISABLE_HPA_CONTROL_FOR_CONN_HANDLE 0x05
+#define HCI_VS_ENABLE_LPA_CONTROL_FOR_CONN_HANDLE  0x14
 
-#define HCI_VS_GET_ADDON_FEATURES_EVENT       0x1B
+#define HCI_VS_ENABLE_LPA_CONTROL_RES_PARAM_LEN    4
+
 #define VS_QHCI_GET_SCRAMBLING_FREQS          0x11
 #define VS_QHCI_SCRAMBLE_A2DP_MEDIA           0x12
+#define HCI_VS_GET_ADDON_FEATURES_EVENT       0x1B
 
 /* Added as part of workaround from stack side for handling no opcode
    command complete events for RX_BURST commands. This needs to be
@@ -432,6 +436,9 @@
 
 /* subcode for VOIP Network Wifi */
 #define HCI_VSC_SUBCODE_VOIP_NETWORK_WIFI               0x01
+
+/* Bluetooth Quality Report OCF */
+#define HCI_CONTROLLER_BQR_OPCODE_OCF (0x015E | HCI_GRP_VENDOR_SPECIFIC)
 
 /* subcode for multi adv feature */
 #define BTM_BLE_MULTI_ADV_SET_PARAM 0x01
@@ -460,6 +467,9 @@
 
 /* debug info sub event */
 #define HCI_VSE_SUBCODE_DEBUG_INFO_SUB_EVT 0x57
+
+/* Bluetooth Quality Report sub event */
+#define HCI_VSE_SUBCODE_BQR_SUB_EVT 0x58
 
 /* LE supported states definition */
 #define HCI_LE_ADV_STATE 0x00000001
@@ -677,9 +687,10 @@ constexpr uint8_t HCI_LE_STATES_INIT_MASTER_SLAVE_BIT = 41;
 #define HCI_ERR_REJ_NO_SUITABLE_CHANNEL 0x39
 #define HCI_ERR_CONTROLLER_BUSY 0x3A
 #define HCI_ERR_UNACCEPT_CONN_INTERVAL 0x3B
-#define HCI_ERR_DIRECTED_ADVERTISING_TIMEOUT 0x3C
+#define HCI_ERR_ADVERTISING_TIMEOUT 0x3C
 #define HCI_ERR_CONN_TOUT_DUE_TO_MIC_FAILURE 0x3D
 #define HCI_ERR_CONN_FAILED_ESTABLISHMENT 0x3E
+#define HCI_ERR_LIMIT_REACHED 0x43
 #define HCI_ERR_MAC_CONNECTION_FAILED 0x3F
 
 /* ConnectionLess Broadcast errors */
@@ -1004,7 +1015,7 @@ constexpr uint8_t HCI_LE_STATES_INIT_MASTER_SLAVE_BIT = 41;
 #define HCI_MITM_PROTECT_REQUIRED 0x01
 
 /* Policy settings status */
-#define HCI_DISABLE_ALL_LM_MODES 0x0000
+#define HCI_POLICY_SETTINGS_DEFAULT_MODE 0x0000
 #define HCI_ENABLE_MASTER_SLAVE_SWITCH 0x0001
 #define HCI_ENABLE_HOLD_MODE 0x0002
 #define HCI_ENABLE_SNIFF_MODE 0x0004
@@ -1012,7 +1023,7 @@ constexpr uint8_t HCI_LE_STATES_INIT_MASTER_SLAVE_BIT = 41;
 
 /* By default allow switch, because host can not allow that */
 /* that until he created the connection */
-#define HCI_DEFAULT_POLICY_SETTINGS HCI_DISABLE_ALL_LM_MODES
+#define HCI_DEFAULT_POLICY_SETTINGS HCI_POLICY_SETTINGS_DEFAULT_MODE
 
 /* Filters that are sent in set filter command */
 #define HCI_FILTER_TYPE_CLEAR_ALL 0x00
@@ -1326,6 +1337,8 @@ typedef struct {
 
 #define HCI_FEATURE_BYTES_PER_PAGE 8
 
+#define HCI_EXT_FEATURES_SUCCESS_EVT_LEN 13
+
 #define HCI_FEATURES_KNOWN(x) \
   (((x)[0] | (x)[1] | (x)[2] | (x)[3] | (x)[4] | (x)[5] | (x)[6] | (x)[7]) != 0)
 
@@ -1388,10 +1401,7 @@ typedef struct {
 #define HCI_SIMPLE_PAIRING_SUPPORTED(x) ((x)[6] & 0x08)
 #define HCI_ENCAP_PDU_SUPPORTED(x) ((x)[6] & 0x10)
 #define HCI_ERROR_DATA_SUPPORTED(x) ((x)[6] & 0x20)
-/* This feature is causing frequent link drops when doing call switch with
- * certain av/hfp headsets */
-// TODO: move the disabling somewhere else
-#define HCI_NON_FLUSHABLE_PB_SUPPORTED(x) (0)  //((x)[6] & 0x40)
+#define HCI_NON_FLUSHABLE_PB_SUPPORTED(x) ((x)[6] & 0x40)
 #define HCI_LINK_SUP_TO_EVT_SUPPORTED(x) ((x)[7] & 0x01)
 #define HCI_INQ_RESP_TX_SUPPORTED(x) ((x)[7] & 0x02)
 #define HCI_LMP_EXTENDED_SUPPORTED(x) ((x)[7] & 0x80)
@@ -1460,6 +1470,9 @@ typedef struct {
 #define HCI_BROADCAST_AUDIO_TX_WITH_EC_3_9(x) ((x)[4] & 0x02)
 #define HCI_BROADCAST_AUDIO_RX_WITH_EC_2_5(x) ((x)[4] & 0x04)
 #define HCI_BROADCAST_AUDIO_RX_WITH_EC_3_9(x) ((x)[4] & 0x08)
+
+/* Simple Pairing Options */
+#define HCI_REMOTE_PUBLIC_KEY_VALIDATION_SUPPORTED(x) ((x) & 0x01)
 
 
 /* Supported Commands*/
@@ -1702,5 +1715,7 @@ typedef struct {
 #define HCI_LE_ENH_TX_TEST_SUPPORTED(x) ((x)[36] & 0x01)
 
 #define HCI_LE_SET_PRIVACY_MODE_SUPPORTED(x) ((x)[39] & 0x04)
+
+#define HCI_READ_LOCAL_SIMPLE_PAIRING_OPTIONS_SUPPORTED(x) ((x)[41] & 0x08)
 
 #endif

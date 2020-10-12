@@ -43,6 +43,8 @@ static void* listen_fn_(void* context);
 extern int local_snoop_socket_create();
 extern void update_snoop_fd(int snoop_fd);
 
+extern bool is_vndbtsnoop_enabled;
+
 static const char* LISTEN_THREAD_NAME_ = "btsnoop_net_listen";
 static const int LOCALHOST_ = 0x7F000001;
 static const int LISTEN_PORT_ = 8872;
@@ -76,7 +78,7 @@ static int notify_listen_thread() {
   OSI_NO_INTR(ret = write(notification_write_fd, &buffer, 1));
   if ( ret < 0){
     LOG_ERROR(LOG_TAG,
-        "%s: Error in notifying the listen thread to exit",__func__)
+        "%s: Error in notifying the listen thread to exit",__func__);
     return -1;
   }
 
@@ -183,16 +185,17 @@ static void* listen_fn_(UNUSED_ATTR void* context) {
     goto cleanup;
   }
 
-  listen_socket_local_ = local_snoop_socket_create();
-  if (listen_socket_local_ != -1) {
-    if(listen_socket_local_ > fd_max) {
-      fd_max = listen_socket_local_;
+  if (is_vndbtsnoop_enabled) {
+    listen_socket_local_ = local_snoop_socket_create();
+    if (listen_socket_local_ != -1) {
+      if(listen_socket_local_ > fd_max) {
+        fd_max = listen_socket_local_;
+      }
+      FD_SET(listen_socket_local_, &save_sock_fds);
     }
-    FD_SET(listen_socket_local_, &save_sock_fds);
   }
-
   for (;;) {
-    int client_socket = -1;
+  int client_socket = -1;
 
     sock_fds = save_sock_fds;
     if ((select(fd_max + 1, &sock_fds, NULL, NULL, NULL)) == -1) {
@@ -204,7 +207,7 @@ static void* listen_fn_(UNUSED_ATTR void* context) {
 
     if ((listen_socket_local_ != -1) && FD_ISSET(listen_socket_local_, &sock_fds)) {
       struct sockaddr_un cliaddr;
-      int length;
+      socklen_t length = sizeof(struct sockaddr_un);
 
       OSI_NO_INTR(client_socket = accept(listen_socket_local_, (struct sockaddr *)&cliaddr,
                   (socklen_t *)&length));

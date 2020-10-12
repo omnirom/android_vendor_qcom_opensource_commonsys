@@ -1,12 +1,19 @@
+prebuilt_etc {
+    name: "bt_configstore.conf",
+    system_ext_specific: true,
+    src: "bt_configstore.conf",
+    sub_dir: "bluetooth",
+}
 
 // btconfigstore shared library
 // ========================================================
+
 cc_library_shared {
-    name: "libctconfigstore",
+    name: "libbtconfigstore",
     defaults: ["fluoride_defaults_qti"],
-    owner: "qcom",
     header_libs: ["libbluetooth_headers"],
     export_header_lib_headers: ["libbluetooth_headers"],
+    system_ext_specific: true,
     srcs: [
         "bt_configstore.cc"
     ],
@@ -21,12 +28,10 @@ cc_library_shared {
          "libcutils",
          "libbase",
          "libhidlbase",
-         "libhidltransport",
-         "libhwbinder",
          "libutils",
          "liblog",
-         "android.hidl.base@1.0",
-         "vendor.qti.hardware.btconfigstore@1.0"
+         "vendor.qti.hardware.btconfigstore@1.0",
+         "vendor.qti.hardware.btconfigstore@2.0",
     ],
     whole_static_libs: [
         "libosi_qti",
@@ -34,12 +39,4 @@ cc_library_shared {
     required: [
         "bt_configstore.conf",
     ],
-
-    arch: {
-        arm: {
-            cflags: [
-                "-DARCH_ARM_32"
-            ],
-        },
-    },
 }
