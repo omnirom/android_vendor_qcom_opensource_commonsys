@@ -1,3 +1,5 @@
+soong_namespace {
+}
 
 // Bluetooth main HW module / shared library for target
 // ========================================================
