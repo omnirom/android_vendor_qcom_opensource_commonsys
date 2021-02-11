@@ -76,8 +76,8 @@
  *  Constants
  ****************************************************************************/
 
- #ifndef BTA_TWS_PLUS_SDP_DB_SIZE
-#define BTA_TWS_PLUS_SDP_DB_SIZE 500
+#ifndef BTA_TWS_PLUS_SDP_DB_SIZE
+#define BTA_TWS_PLUS_SDP_DB_SIZE 2000
 #endif
 
 static uint8_t __attribute__((aligned(4))) bta_tws_plus_sdp_db_data[BTA_TWS_PLUS_SDP_DB_SIZE];

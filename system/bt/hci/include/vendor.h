@@ -100,6 +100,13 @@ typedef enum {
   BT_SOC_REASON_SSR_CMD        =  0x8F,
   BT_SOC_REASON_POWERON        =  0x90,
   BT_SOC_REASON_WATCHDOG       =  0x91,
+  BT_SOC_REASON_RAMMASK_RGN1   =  0x92,
+  BT_SOC_REASON_RAMMASK_RGN0   =  0x93,
+  BT_SOC_REASON_Q6_WATCHDOG    =  0x94,
+  BT_SOC_REASON_ZEALIS_RAM_MASK_RGN0 =  0x95,
+  BT_SOC_REASON_ZEALIS_RAM_MASK_RGN1 =  0x96,
+  BT_SOC_REASON_APSS_RESET           =  0x97,
+  BT_SOC_REASON_INVALID_STACK  =  0xF0,
 
   // Transport Driver Crash Reasons
   BT_HOST_REASON_UARTINIT_STUCK        =  0xB1,
@@ -123,6 +130,10 @@ typedef enum {
   BT_HOST_REASON_HCI_PRE_SHUTDOWN_CC_NOT_RCVD    =  0xC5,
   BT_HOST_REASON_HCI_SET_BD_ADDRESS_CC_NOT_RCVD  =  0xC6,
   BT_HOST_REASON_FAILED_TO_RECEIVE_SLEEP_IND     =  0xC7,
+  BT_HOST_REASON_POWER_ON_REGS_STUCK             =  0xC8,
+  BT_HOST_REASON_RX_THREAD_START_STUCK           =  0xC9,
+  BT_HOST_REASON_GET_LOCALADDR_STUCK             =  0xCA,
+  BT_HOST_REASON_OTP_INFO_GET_CMD_STUCK          =  0xCB
 } soc_crash_reason_e;
 
 typedef struct {
@@ -154,6 +165,13 @@ static secondary_reason secondary_crash_reason [] = {
 { BT_SOC_REASON_SSR_CMD                  ,    "SSR CMD"},
 { BT_SOC_REASON_POWERON                  ,    "Power ON"},
 { BT_SOC_REASON_WATCHDOG                 ,    "Watchdog"},
+{ BT_SOC_REASON_RAMMASK_RGN1             ,    "RAMMASK RGN1"},
+{ BT_SOC_REASON_RAMMASK_RGN0             ,    "RAMMASK RGN0"},
+{ BT_SOC_REASON_Q6_WATCHDOG              ,    "Q6 Watchdog"},
+{ BT_SOC_REASON_ZEALIS_RAM_MASK_RGN0     ,    "ZEALIS RAM MASK RGN0"},
+{ BT_SOC_REASON_ZEALIS_RAM_MASK_RGN1     ,    "ZEALIS RAM MASK RGN1"},
+{ BT_SOC_REASON_APSS_RESET               ,    "APSS reset"},
+{ BT_SOC_REASON_INVALID_STACK            ,    "Invalid Stack"},
 { BT_HOST_REASON_UARTINIT_STUCK           ,    "UartInitStuck"},
 { BT_HOST_REASON_GETVER_SEND_STUCK        ,    "GetVerSendStuck"},
 { BT_HOST_REASON_GETVER_NO_RSP_RCVD       ,    "GetVerNoRspRcvd"},
@@ -174,7 +192,11 @@ static secondary_reason secondary_crash_reason [] = {
 { BT_HOST_REASON_HCI_RESET_CC_NOT_RCVD         , "HCI Reset Cmd CC NotRcvd"},
 { BT_HOST_REASON_HCI_PRE_SHUTDOWN_CC_NOT_RCVD  , "HCI Pre shutdown Cmd CC not Rcvd"},
 { BT_HOST_REASON_HCI_SET_BD_ADDRESS_CC_NOT_RCVD, "HCI BD address CC not Rcvd"},
-{ BT_HOST_REASON_FAILED_TO_RECEIVE_SLEEP_IND   , "Failed to receive SLEEP IND from SoC"}
+{ BT_HOST_REASON_FAILED_TO_RECEIVE_SLEEP_IND   , "Failed to receive SLEEP IND from SoC"},
+{ BT_HOST_REASON_POWER_ON_REGS_STUCK           , "SoC Power ON Sequence stuck"},
+{ BT_HOST_REASON_RX_THREAD_START_STUCK         , "RX thread start stuck"},
+{ BT_HOST_REASON_GET_LOCALADDR_STUCK           , "Get local BD address stuck"},
+{ BT_HOST_REASON_OTP_INFO_GET_CMD_STUCK        , "Get OTP info. cmd stuck"}
 };
 
 enum host_crash_reason_e  {

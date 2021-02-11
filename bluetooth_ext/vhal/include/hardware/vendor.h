@@ -229,6 +229,25 @@ typedef struct {
     /** start clock sync protocol */
     void (*start_clock_sync)(void);
 
+    /** interop match address */
+    bool (*interop_match_addr)(const char* feature_name,
+            const RawAddress* addr);
+
+    /** interop match name */
+    bool (*interop_match_name)(const char* feature_name, const char* name);
+
+    /** interop match address or name */
+    bool (*interop_match_addr_or_name)(const char* feature_name,
+        const RawAddress* addr);
+
+    /** add or remove address entry to interop database */
+    void (*interop_database_add_remove_addr)(bool do_add,
+        const char* feature_name, const RawAddress* addr, int length);
+
+    /** add or remove name entry to interop database */
+    void (*interop_database_add_remove_name)(bool do_add,
+        const char* feature_name, const char* name);
+
 } btvendor_interface_t;
 
 __END_DECLS

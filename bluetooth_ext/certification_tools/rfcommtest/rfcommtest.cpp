@@ -715,7 +715,7 @@ void bdt_rfcomm_disc_from_server(void)
 void bdt_init(void)
 {
     bdt_log("INIT BT ");
-    status = (bt_status_t)sBtInterface->init(&bt_callbacks, false, false, 0);
+    status = (bt_status_t)sBtInterface->init(&bt_callbacks, false, false, 0, false);
     if (status == BT_STATUS_SUCCESS) {
         // Get Vendor Interface
         btvendorInterface = (btvendor_interface_t *)sBtInterface->get_profile_interface(BT_PROFILE_VENDOR_ID);

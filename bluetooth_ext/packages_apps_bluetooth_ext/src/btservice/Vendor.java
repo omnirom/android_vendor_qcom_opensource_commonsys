@@ -57,6 +57,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothClass;
 import android.bluetooth.BluetoothQualityReport;
+import com.android.bluetooth.btservice.InteropUtil.InteropFeature;
 import com.android.bluetooth.Utils;
 
 import android.content.Intent;
@@ -350,6 +351,35 @@ final class Vendor {
         informTimeoutToHidlNative();
     }
 
+    static boolean interopMatchAddr(InteropFeature feature, String address) {
+        return interopMatchAddrNative(feature.name(), address);
+    }
+
+    static boolean interopMatchName(InteropFeature feature, String name) {
+        return interopMatchNameNative(feature.name(), name);
+    }
+
+    static boolean interopMatchAddrOrName(InteropFeature feature, String address) {
+        return interopMatchAddrOrNameNative(feature.name(), address);
+    }
+
+    static void interopDatabaseAddAddr(InteropFeature feature,
+            String address, int length) {
+        Vendor.interopDatabaseAddRemoveAddrNative(true, feature.name(), address, length);
+    }
+
+    static void interopDatabaseRemoveAddr(InteropFeature feature, String address) {
+        Vendor.interopDatabaseAddRemoveAddrNative(false, feature.name(), address, 0);
+    }
+
+    static void interopDatabaseAddName(InteropFeature feature, String name) {
+        Vendor.interopDatabaseAddRemoveNameNative(true, feature.name(), name);
+    }
+
+    static void interopDatabaseRemoveName(InteropFeature feature, String name) {
+        Vendor.interopDatabaseAddRemoveNameNative(false, feature.name(), name);
+    }
+
     private native void bredrcleanupNative();
     private native void bredrstartupNative();
     private native void initNative();
@@ -370,4 +400,12 @@ final class Vendor {
         int channel, int jitter, int offset);
     private native boolean startClockSyncNative();
     private native void informTimeoutToHidlNative();
+
+    private native static boolean interopMatchAddrNative(String feature_name, String address);
+    private native static boolean interopMatchNameNative(String feature_name, String name);
+    private native static boolean interopMatchAddrOrNameNative(String feature_name, String address);
+    private native static void interopDatabaseAddRemoveAddrNative(boolean do_add,
+            String feature_name, String address, int length);
+    private native static void interopDatabaseAddRemoveNameNative(boolean do_add,
+            String feature_name, String name);
 }

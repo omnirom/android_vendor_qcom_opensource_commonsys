@@ -56,6 +56,8 @@ class BrowsedMediaPlayer_ext {
     private boolean mNeedToSendGetFolderItem = false;
     private MediaBrowser mTempMediaBrowser = null;
 
+    private boolean mBrowseRoot = false;
+
     /*  package and service name of target Media Player which is set for browsing */
     private String mPackageName;
     private String mConnectingPackageName;
@@ -141,6 +143,7 @@ class BrowsedMediaPlayer_ext {
             mTempMediaBrowser = null;
             mConnState = SUSPENDED;
             Log.e(TAG, "mediaBrowser SUSPENDED connection with " + mPackageName);
+            resetBrowse();
         }
     }
 
@@ -392,34 +395,25 @@ class BrowsedMediaPlayer_ext {
     }
 
     public void setBrowsed(String packageName, String cls) {
-        Log.w(TAG, "!! In setBrowse function !!" + mFolderItems);
-        if ((mPackageName != null && packageName != null
-                && !mPackageName.equals(packageName)) || (mFolderItems == null)) {
+        Log.w(TAG, "!! In setBrowse function !!" + mFolderItems + "browse root " + mBrowseRoot);
+        if ((mPackageName != null && packageName != null && !mPackageName.equals(packageName))
+                || (mFolderItems == null) || mBrowseRoot) {
             Log.d(TAG, "setBrowse for packageName = " + packageName);
+            resetBrowse();
             mConnectingPackageName = packageName;
             mPackageName = packageName;
             mClassName = cls;
 
             mCurrentBrowsePackage = packageName;
             mCurrentBrowseClass = cls;
-           /* cleanup variables from previous browsed calls */
-           mFolderItems = null;
-           mMediaId = null;
-           mRootFolderUid = null;
-           mPlayerRoot = false;
-           /*
-            * create stack to store the navigation trail (current folder ID). This
-            * will be required while navigating up the folder
-            */
-           mPathStack = new Stack<String>();
-           mLocalPathCache = new Stack<String>();
-           /* Bind to MediaBrowseService of MediaPlayer */
-           MediaConnectionCallback callback = new MediaConnectionCallback(packageName);
-           MediaBrowser tempBrowser = new MediaBrowser(
-                   mContext, new ComponentName(packageName, mClassName), callback, null);
-           mTempMediaBrowser = tempBrowser;
-           callback.setBrowser(tempBrowser);
-           tempBrowser.connect();
+
+            /* Bind to MediaBrowseService of MediaPlayer */
+            MediaConnectionCallback callback = new MediaConnectionCallback(packageName);
+            MediaBrowser tempBrowser = new MediaBrowser(
+                    mContext, new ComponentName(packageName, mClassName), callback, null);
+            mTempMediaBrowser = tempBrowser;
+            callback.setBrowser(tempBrowser);
+            tempBrowser.connect();
         } else if (mFolderItems != null) {
             mPackageName = packageName;
             mClassName = cls;
@@ -479,23 +473,10 @@ class BrowsedMediaPlayer_ext {
 
     public void TryReconnectBrowse(String packageName, String cls) {
         Log.w(TAG, "Try reconnection with Browser service for package = " + packageName);
+        resetBrowse();
         mConnectingPackageName = packageName;
         mPackageName = packageName;
         mClassName = cls;
-
-        /* cleanup variables from previous browsed calls */
-        mFolderItems = null;
-        mMediaId = null;
-        mRootFolderUid = null;
-        mPlayerRoot = false;
-
-        if (mPathStack != null)
-            mPathStack = null;
-        mPathStack = new Stack<String>();
-
-        if (mLocalPathCache != null)
-            mLocalPathCache = null;
-        mLocalPathCache = new Stack<String>();
 
         MediaConnectionCallback callback = new MediaConnectionCallback(packageName);
         MediaBrowser tempBrowser = new MediaBrowser(
@@ -509,6 +490,11 @@ class BrowsedMediaPlayer_ext {
         Log.w(TAG, "Set current Browse based on Addr Player as " + packageName);
         mCurrentBrowsePackage = packageName;
         mCurrentBrowseClass = cls;
+    }
+
+    public void setBrowseRoot() {
+        Log.w(TAG,"SetBrowse frm non-Browsable Player, update root upon next proper SetBrowse Cmd");
+        mBrowseRoot = true;
     }
 
     /* called when connection to media player is closed */
@@ -770,7 +756,6 @@ class BrowsedMediaPlayer_ext {
         }
     }
 
-
     /*
      * helper method to filter required attibutes before sending GetFolderItems response
      */
@@ -950,13 +935,11 @@ class BrowsedMediaPlayer_ext {
         return attrValue;
     }
 
-
     public String getPackageName() {
         return mPackageName;
     }
 
     /* Helper methods */
-
     private void RespondPendingGetFolderItemsVFS() {
         if (mNeedToSendGetFolderItem) {
             Log.w(TAG, "send pending get foler item rsp");
@@ -1089,6 +1072,24 @@ class BrowsedMediaPlayer_ext {
             tempMedia.add(item);
         }
         return tempMedia;
+    }
+
+    private void resetBrowse() {
+        Log.w(TAG, "Reset Browse variables as part of player launch OR switch");
+        /* cleanup variables from previous browsed calls */
+        mFolderItems = null;
+        mMediaId = null;
+        mRootFolderUid = null;
+        mPlayerRoot = false;
+        mBrowseRoot = false;
+
+        if (mPathStack != null)
+            mPathStack = null;
+        mPathStack = new Stack<String>();
+
+        if (mLocalPathCache != null)
+            mLocalPathCache = null;
+        mLocalPathCache = new Stack<String>();
     }
 
     /* convert integer to byte array of size 8 bytes */

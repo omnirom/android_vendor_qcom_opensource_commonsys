@@ -69,6 +69,7 @@ import android.app.NotificationManager;
 import android.app.NotificationChannel;
 
 import com.android.bluetooth.btservice.AdapterService;
+import com.android.bluetooth.btservice.InteropUtil;
 import com.android.bluetooth.btservice.ProfileService;
 import com.android.bluetooth.btservice.AbstractionLayer;
 import com.android.bluetooth.ba.BATService;
@@ -170,7 +171,6 @@ public final class Avrcp_ext {
     private boolean avrcp_playstatus_blacklist = false;
     private static final String [] BlacklistDeviceAddrToMediaAttr = {"00:17:53"/*Toyota Etios*/};
     private boolean ignore_play;
-    private BluetoothDevice disconnectedActiveDevice;
     private byte changePathFolderType;
     private FolderItemsRsp_ext saveRspObj;
     private int changePathDepth;
@@ -181,20 +181,6 @@ public final class Avrcp_ext {
     public static final String ABS_VOL_MAP = "bluetooth_ABS_VOL_map";
     private boolean isShoActive = false;
     private boolean twsShoEnabled = false;
-    private static final String playerStateUpdateBlackListedAddr[] = {
-         "BC:30:7E", //bc-30-7e-5e-f6-27, Name: Porsche BT 0310; bc-30-7e-8c-22-cb, Name: Audi MMI 1193
-         "2C:DC:AD", //2C-DC-AD-BB-2F-25, Name: PORSCHE
-         "00:1E:43", //00-1e-43-14-f0-68, Name: Audi MMI 4365
-         "9C:DF:03", //9C:DF:03:D3:C0:17, Name: Benz S600L
-         "00:0A:08",  //00:0A:08:51:1E:E7, Name: BMW530
-         "00:04:79", //00-04-79-00-06-bc, Name: radius HP-BTL01
-         "28:A1:83", //28-A1-83-94-90-AE, Name: VW Radio
-         "24:df:6a", //24-df-6a-f4-0a-7e, Name: HUAWEI WATCH
-     };
-    private static final String playerStateUpdateBlackListedNames[] = {
-       "Audi",
-       "Porsche"
-    };
 
     private static final String nonMediaAppsBlacklistedNames[] = {
        "telecom",
@@ -258,14 +244,12 @@ public final class Avrcp_ext {
     private static final int AVRCP_BASE_VOLUME_STEP = 1;
     public static final int AVRC_ID_VOL_UP = 0x41;
     public static final int AVRC_ID_VOL_DOWN = 0x42;
-    private static final int SET_MEDIA_SESSION_DELAY = 300;
 
     /* Addressed player handling */
     private AddressedMediaPlayer_ext mAddressedMediaPlayer;
 
     /* List of Media player instances, useful for retrieving MediaPlayerList or MediaPlayerInfo */
     private SortedMap<Integer, MediaPlayerInfo_ext> mMediaPlayerInfoList;
-    private boolean mAvailablePlayerViewChanged;
 
     /* List of media players in Conf file WhiteList DB */
     private List<String> mBrowsePlayerListConfWLDB;
@@ -287,11 +271,6 @@ public final class Avrcp_ext {
     private final BroadcastReceiver mBootReceiver = new AvrcpServiceBootReceiver();
     private final BroadcastReceiver mShutDownReceiver = new AvrcpServiceShutDownReceiver();
     private final BroadcastReceiver mAvrcpBroadcastReceiver = new AvrcpBroadcastReceiver();
-    /* Recording passthrough key dispatches */
-    static private final int PASSTHROUGH_LOG_MAX_SIZE = DEBUG ? 50 : 10;
-    private EvictingQueue_ext<MediaKeyLog> mPassthroughLogs; // Passthorugh keys dispatched
-    private List<MediaKeyLog> mPassthroughPending; // Passthrough keys sent not dispatched yet
-    private int mPassthroughDispatched; // Number of keys dispatched
 
     private BluetoothDevice mCurrentBrowsingDevice = null;
     private BluetoothDevice mBrowsingActiveDevice = null;
@@ -550,11 +529,7 @@ public final class Avrcp_ext {
         mAvrcpMediaRsp = new AvrcpMediaRsp();
         mAvrcpPlayerAppSettingsRsp = new AvrcpPlayerAppSettingsRsp();
         mMediaPlayerInfoList = new TreeMap<Integer, MediaPlayerInfo_ext>();
-        mAvailablePlayerViewChanged = false;
         mBrowsePlayerInfoList = Collections.synchronizedList(new ArrayList<BrowsePlayerInfo_ext>());
-        mPassthroughDispatched = 0;
-        mPassthroughLogs = new EvictingQueue_ext<MediaKeyLog>(PASSTHROUGH_LOG_MAX_SIZE);
-        mPassthroughPending = Collections.synchronizedList(new ArrayList<MediaKeyLog>());
         if (mMediaSessionManager != null) {
             mMediaSessionManager.addOnActiveSessionsChangedListener(mActiveSessionListener, null,
                     mHandler);
@@ -618,7 +593,6 @@ public final class Avrcp_ext {
         changePathDepth = 0;
         changePathFolderType = 0;
         changePathDirection = 0;
-        disconnectedActiveDevice = null;
         Avrcp_extVolumeManager();
         Log.v(TAG, "Exit start");
     }
@@ -689,7 +663,6 @@ public final class Avrcp_ext {
         changePathDepth = 0;
         changePathFolderType = 0;
         changePathDirection = 0;
-        disconnectedActiveDevice = null;
         Log.d(TAG, "Exit doQuit");
     }
 
@@ -793,26 +766,17 @@ public final class Avrcp_ext {
             Log.d(TAG, "Exit onQueueChanged");
         }
     }
-    private boolean isPlayerStateUpdateBlackListed(String address, String deviceName) {
+
+    private boolean isPlayerStateUpdateBlackListed(String address) {
         if (address == null) return false;
-        for (int i = 0; i < playerStateUpdateBlackListedAddr.length; i++) {
-            String addr = playerStateUpdateBlackListedAddr[i];
-            if (address.toLowerCase().startsWith(addr.toLowerCase())) {
-                Log.d(TAG, "AVRCP PlayerStateUpdateBlacklist Addr Matched:" + address);
-                return true;
-            }
-        }
-        if (deviceName == null) return false;
-        for (int j = 0; j < playerStateUpdateBlackListedNames.length; j++) {
-            String name = playerStateUpdateBlackListedNames[j];
-            if (deviceName.toLowerCase().startsWith(name.toLowerCase()) ||
-                deviceName.toLowerCase().equals(name.toLowerCase())) {
-                Log.d(TAG, "AVRCP PlayerStateUpdateBlacklist Name Matched:" + deviceName);
-                return true;
-            }
-        }
-        return false;
-    };
+
+        boolean matched = InteropUtil.interopMatchAddrOrName(
+            InteropUtil.InteropFeature.INTEROP_NOT_UPDATE_AVRCP_PAUSED_TO_REMOTE,
+            address);
+        Log.d(TAG, "isPlayerStateUpdateBlackListed: matched=" + matched);
+
+        return matched;
+    }
 
     private boolean isAppBlackListedForMediaSessionUpdate(String appName) {
         if (appName == null) return false;
@@ -824,7 +788,7 @@ public final class Avrcp_ext {
             }
         }
         return false;
-    };
+    }
     /** Handles Avrcp messages. */
     private final class AvrcpMessageHandler extends Handler {
         private AvrcpMessageHandler(Looper looper) {
@@ -1013,8 +977,7 @@ public final class Avrcp_ext {
                 {
                     if ((deviceFeatures[deviceIndex].mCurrentDevice != null) &&
                         isPlayerStateUpdateBlackListed(
-                            deviceFeatures[deviceIndex].mCurrentDevice.getAddress(),
-                            deviceFeatures[deviceIndex].mCurrentDevice.getName()) &&
+                            deviceFeatures[deviceIndex].mCurrentDevice.getAddress()) &&
                             ((playState == PLAYSTATUS_PAUSED) ||
                             (playState == PLAYSTATUS_STOPPED))) {
                         if (mA2dpService.getConnectedDevices().size() > 0) {
@@ -1609,12 +1572,6 @@ public final class Avrcp_ext {
                 handlePassthroughCmd(bdaddr, msg.arg1, msg.arg2);
                 break;
 
-            case MESSAGE_SET_MEDIA_SESSION:
-                android.media.session.MediaController mMediaController =
-                    (android.media.session.MediaController)msg.obj;
-                setActiveMediaSession(mMediaController);
-                break;
-
             case MSG_SET_AVRCP_CONNECTED_DEVICE:
                 BluetoothDevice device = (BluetoothDevice) msg.obj;
                 if (msg.arg1 == BluetoothProfile.STATE_CONNECTED) {
@@ -1784,7 +1741,6 @@ public final class Avrcp_ext {
                         registerNotificationRspAvalPlayerChangedNative(
                                 AvrcpConstants.NOTIFICATION_TYPE_CHANGED,
                                 getByteAddress(deviceFeatures[deviceIndex].mCurrentDevice));
-                        mAvailablePlayerViewChanged = false;
                         deviceFeatures[deviceIndex].mAvailablePlayersChangedNT =
                                 AvrcpConstants.NOTIFICATION_TYPE_CHANGED;
                     }
@@ -1858,8 +1814,7 @@ public final class Avrcp_ext {
         {
             if ((deviceFeatures[deviceIndex].mCurrentDevice != null) &&
                 isPlayerStateUpdateBlackListed(
-                    deviceFeatures[deviceIndex].mCurrentDevice.getAddress(),
-                    deviceFeatures[deviceIndex].mCurrentDevice.getName()) &&
+                    deviceFeatures[deviceIndex].mCurrentDevice.getAddress()) &&
                ((newPlayStatus == PLAYSTATUS_PAUSED) ||
                (newPlayStatus == PLAYSTATUS_STOPPED))) {
 
@@ -2374,7 +2329,6 @@ public final class Avrcp_ext {
                                 AvrcpConstants_ext.NOTIFICATION_TYPE_INTERIM) {
                         registerNotificationRspAvalPlayerChangedNative(
                                 AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED, addr);
-                        mAvailablePlayerViewChanged = false;
                         deviceFeatures[index].mAvailablePlayersChangedNT =
                                 AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
                     }
@@ -2520,8 +2474,7 @@ public final class Avrcp_ext {
                 mHandler.removeMessages(MSG_PLAY_STATUS_CMD_TIMEOUT);
                 deviceFeatures[deviceIndex].isPlayStatusTimeOut = false;
                 if(avrcp_playstatus_blacklist && isPlayerStateUpdateBlackListed(
-                    deviceFeatures[deviceIndex].mCurrentDevice.getAddress(),
-                    deviceFeatures[deviceIndex].mCurrentDevice.getName()) &&
+                    deviceFeatures[deviceIndex].mCurrentDevice.getAddress()) &&
                     ((currPlayState == PLAYSTATUS_PAUSED) ||
                      (currPlayState == PLAYSTATUS_STOPPED))) {
                     if (mA2dpService.getConnectedDevices().size() > 0) {
@@ -2563,9 +2516,9 @@ public final class Avrcp_ext {
                     (deviceFeatures[deviceIndex].mLastRspPlayStatus == -1)) {
                     registerNotificationRspPlayStatusNative(
                                 deviceFeatures[deviceIndex].mPlayStatusChangedNT,
-                                PLAYSTATUS_STOPPED,
+                                PLAYSTATUS_PAUSED,
                                 getByteAddress(deviceFeatures[deviceIndex].mCurrentDevice));
-                    Log.v(TAG, "Sending Stopped in INTERIM response when current_play_status is playing and device just got connected");
+                    Log.v(TAG, "Sending Paused  in INTERIM response when current_play_status is playing and device just got connected");
                     deviceFeatures[deviceIndex].mPlayStatusChangedNT =
                                         AvrcpConstants_ext.NOTIFICATION_TYPE_CHANGED;
                     if (!deviceFeatures[deviceIndex].isPlayStatusTimeOut) {
@@ -2754,8 +2707,7 @@ public final class Avrcp_ext {
             } else {
                 if (isPlayingState(deviceFeatures[deviceIndex].mCurrentPlayState) &&
                     (avrcp_playstatus_blacklist && isPlayerStateUpdateBlackListed(
-                     deviceFeatures[deviceIndex].mCurrentDevice.getAddress(),
-                     deviceFeatures[deviceIndex].mCurrentDevice.getName()))) {
+                     deviceFeatures[deviceIndex].mCurrentDevice.getAddress()))) {
                  currPosition = mCurrentPlayerState.getPosition();
                  Log.d(TAG, "Remote is BLed for playstatus, So send playposition by fetching from "+
                                    "mCurrentPlayerState." + currPosition);
@@ -3313,7 +3265,8 @@ public final class Avrcp_ext {
             if (browse_active_device != null) {
                 is_player_updated_for_browse = true;
                 byte[] addr = getByteAddress(browse_active_device);
-                if (mAvrcpBrowseManager.getBrowsedMediaPlayer(addr) != null) {
+                if (isBrowseSupported(PackageName) &&
+                        mAvrcpBrowseManager.getBrowsedMediaPlayer(addr) != null) {
                     Log.w(TAG, "Addr Player update to Browse " + PackageName);
                     mAvrcpBrowseManager.getBrowsedMediaPlayer(addr).
                             setCurrentPackage(PackageName, browseService);
@@ -3428,7 +3381,7 @@ public final class Avrcp_ext {
                 }
             }
         }
-        if(avrcp_playstatus_blacklist && isPlayerStateUpdateBlackListed(device.getAddress(),device.getName()))
+        if(avrcp_playstatus_blacklist && isPlayerStateUpdateBlackListed(device.getAddress()))
            NeedCheckMusicActive = false;
         for (int i = 0; i < maxAvrcpConnections; i++ ) {
             if (deviceFeatures[i].mCurrentDevice == null) {
@@ -3778,7 +3731,7 @@ public final class Avrcp_ext {
                 // register new Media Controller Callback and update the current IDs
                 if (!updateCurrentController(selectedId, mCurrBrowsePlayerID)) {
                     Log.e(TAG, functionTag + "updateCurrentController failed!");
-                    setAddressedPlayerRspNative(bdaddr, AvrcpConstants_ext.RSP_INTERNAL_ERR);
+                    setAddressedPlayerRspNative(bdaddr, AvrcpConstants_ext.RSP_INV_PLAYER);
                     return;
                 }
                 // If we don't have a controller, try to launch the player
@@ -3827,6 +3780,7 @@ public final class Avrcp_ext {
             } else if (!isBrowseSupported(browsedPackage)) {
                 Log.w(TAG, "Browse unsupported for id:" + mCurrBrowsePlayerID
                         + ", packagename : " + browsedPackage);
+                mAvrcpBrowseManager.getBrowsedMediaPlayer(bdaddr).setBrowseRoot();
                 status = AvrcpConstants_ext.RSP_PLAY_NOT_BROW;
             } else if (!startBrowseService(bdaddr, browsedPackage)) {
                 Log.e(TAG, "service cannot be started for browse player id:" + mCurrBrowsePlayerID
@@ -3919,50 +3873,6 @@ public final class Avrcp_ext {
         }
         // We shouldn't ever get here.
         Log.e(TAG, "Player info for " + packageName + " doesn't exist!");
-    }
-
-    private void setActiveMediaSession(MediaSession.Token token) {
-        android.media.session.MediaController activeController =
-                new android.media.session.MediaController(mContext, token);
-        if (isAppBlackListedForMediaSessionUpdate(activeController.getPackageName())) {
-            Log.d(TAG, "Ignore active media session change to " + activeController.getPackageName());
-            return;
-        }
-
-        if(mHandler.hasMessages(MESSAGE_SET_MEDIA_SESSION))
-            mHandler.removeMessages(MESSAGE_SET_MEDIA_SESSION);
-
-        if (DEBUG) Log.v(TAG, "Set active media session " + activeController.getPackageName());
-        HeadsetService mService = HeadsetService.getHeadsetService();
-        if (mService != null && mService.isScoOrCallActive()) {
-            Log.w(TAG,"setActiveMediaSession: HF is in non CS call, delaying registration");
-            Message msg = mHandler.obtainMessage(MESSAGE_SET_MEDIA_SESSION, activeController);
-            mHandler.sendMessageDelayed(msg, SET_MEDIA_SESSION_DELAY);
-            return;
-        }
-        synchronized (Avrcp_ext.this) {
-            addMediaPlayerController(activeController);
-            setAddressedMediaSessionPackage(activeController.getPackageName());
-            mCachedBrowsePlayer = activeController.getPackageName();
-            Log.w(TAG,"Trigger setAddressedMediaSessionPackage from setActiveMediaSession" +
-                    mCachedBrowsePlayer);
-        }
-    }
-
-    private void setActiveMediaSession(android.media.session.MediaController mController) {
-        HeadsetService mService = HeadsetService.getHeadsetService();
-        if (isAppBlackListedForMediaSessionUpdate(mController.getPackageName())) {
-            if (mService != null && mService.isScoOrCallActive()) {
-                Log.w(TAG, "Ignore media session during call");
-                return;
-            }
-        }
-
-        addMediaPlayerController(mController);
-        setAddressedMediaSessionPackage(mController.getPackageName());
-        mCachedBrowsePlayer = mController.getPackageName();
-        Log.w(TAG,"Trigger setAddressedMediaSessionPkg from setActiveMediaSession" +
-                mCachedBrowsePlayer);
     }
 
     private boolean startBrowseService(byte[] bdaddr, String packageName) {
@@ -4140,7 +4050,6 @@ public final class Avrcp_ext {
                     // New player
                     mLastUsedPlayerID++;
                     updateId = mLastUsedPlayerID;
-                    mAvailablePlayerViewChanged = true;
                 }
                 mMediaPlayerInfoList.put(updateId, info);
                 mMediaPlayerIds.put(packageName, updateId);
@@ -4169,7 +4078,6 @@ public final class Avrcp_ext {
                 if (removeKey != -1) {
                     if (DEBUG)
                         Log.d(TAG, "remove #" + removeKey + ":" + mMediaPlayerInfoList.get(removeKey));
-                    mAvailablePlayerViewChanged = true;
                     Log.d(TAG, "Removing media player Wrapper for " + packageName + " with id "
                                     + mMediaPlayerIds.get(packageName));
                     mMediaPlayerIds.remove(packageName);
@@ -4487,7 +4395,7 @@ public final class Avrcp_ext {
                     mMediaController.registerCallback(mMediaControllerCb, mHandler);
                 } else {
                     registerRsp = false;
-                    updateNewIds(preAddrId, preBrowseId);
+                    updateNewIds((addrId == preAddrId) ? NO_PLAYER_ID : preAddrId, preBrowseId);
                 }
             }
         }
@@ -4806,21 +4714,6 @@ public final class Avrcp_ext {
 
         ProfileService.println(sb, "");
         mAddressedMediaPlayer.dump(sb, mMediaController);
-
-        ProfileService.println(sb, "");
-        ProfileService.println(sb, mPassthroughDispatched + " passthrough operations: ");
-        if (mPassthroughDispatched > mPassthroughLogs.size())
-            ProfileService.println(sb, "  (last " + mPassthroughLogs.size() + ")");
-        synchronized (mPassthroughLogs) {
-            for (MediaKeyLog log : mPassthroughLogs) {
-                ProfileService.println(sb, "  " + log);
-            }
-        }
-        synchronized (mPassthroughPending) {
-            for (MediaKeyLog log : mPassthroughPending) {
-                ProfileService.println(sb, "  " + log);
-            }
-        }
 
         // Print the blacklisted devices (for absolute volume control)
         SharedPreferences pref =
@@ -5282,13 +5175,6 @@ public final class Avrcp_ext {
           return;
         }
 
-        if (index == INVALID_DEVICE_INDEX && disconnectedActiveDevice != null &&
-            (disconnectedActiveDevice.equals(device)
-            || isTwsPlusPair(disconnectedActiveDevice, device))) {
-            Log.v(TAG, "No need to store volume again during avrcp disconnect volume is stored");
-            disconnectedActiveDevice = null;
-            return;
-        }
         pref.putInt(device.getAddress(), storeVolume);
         if (device != null && device.isTwsPlusDevice()) {
             AdapterService mAdapterService = AdapterService.getAdapterService();
@@ -5687,7 +5573,6 @@ public final class Avrcp_ext {
             deviceFeatures[deviceIndex].mLastPassthroughcmd = code;
 
         mMediaSessionManager.dispatchMediaKeyEvent(event);
-        addKeyPending(event);
     }
 
     private int avrcpPassthroughToKeyCode(int operation) {
@@ -5799,31 +5684,6 @@ public final class Avrcp_ext {
             case BluetoothAvrcp.PASSTHROUGH_ID_VENDOR:
             default:
                 return KeyEvent.KEYCODE_UNKNOWN;
-        }
-    }
-
-    private void addKeyPending(KeyEvent event) {
-        mPassthroughPending.add(new MediaKeyLog(System.currentTimeMillis(), event));
-    }
-
-    private void recordKeyDispatched(KeyEvent event, String packageName) {
-        long time = System.currentTimeMillis();
-        Log.v(TAG, "recordKeyDispatched: " + event + " dispatched to " + packageName);
-        setAddressedMediaSessionPackage(packageName);
-        mCachedBrowsePlayer = packageName;
-        Log.w(TAG,"Trigger setAddressedMediaSessionPkg recordKeyDispatch" + mCachedBrowsePlayer);
-        synchronized (mPassthroughPending) {
-            Iterator<MediaKeyLog> pending = mPassthroughPending.iterator();
-            while (pending.hasNext()) {
-                MediaKeyLog log = pending.next();
-                if (log.addDispatch(time, event, packageName)) {
-                    mPassthroughDispatched++;
-                    mPassthroughLogs.add(log);
-                    pending.remove();
-                    return;
-                }
-            }
-            Log.w(TAG, "recordKeyDispatch: can't find matching log!");
         }
     }
 

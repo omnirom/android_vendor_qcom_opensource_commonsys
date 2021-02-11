@@ -59,6 +59,7 @@
 #include "bt_configstore.h"
 #include <vector>
 #include <dlfcn.h>
+#include <shared_mutex>
 
 namespace android {
 int load_bt_configstore_lib();
@@ -74,6 +75,8 @@ static jmethodID method_whitelistedPlayersChangedCallback;
 
 static btvendor_interface_t *sBluetoothVendorInterface = NULL;
 static jobject mCallbacksObj = NULL;
+
+static std::shared_timed_mutex interface_mutex;
 
 static char soc_name[16];
 static char a2dp_offload_Cap[PROPERTY_VALUE_MAX] = {'\0'};
@@ -356,6 +359,8 @@ static void initNative(JNIEnv *env, jobject object) {
     const bt_interface_t* btInf;
     bt_status_t status;
 
+    std::unique_lock<std::shared_timed_mutex> interface_lock(interface_mutex);
+
     load_bt_configstore_lib();
 
     if (bt_configstore_intf != NULL) {
@@ -420,6 +425,8 @@ static void initNative(JNIEnv *env, jobject object) {
 
 static void cleanupNative(JNIEnv *env, jobject object) {
     const bt_interface_t* btInf;
+
+    std::unique_lock<std::shared_timed_mutex> interface_lock(interface_mutex);
 
     if (bt_configstore_lib_handle) {
       dlclose(bt_configstore_lib_handle);
@@ -604,6 +611,187 @@ static jboolean startClockSyncNative(JNIEnv* env)
     return true;
 }
 
+static jboolean interopMatchAddrNative(JNIEnv* env, jclass clazz,
+      jstring feature_name, jstring address) {
+  ALOGV("%s", __func__);
+
+  std::shared_lock<std::shared_timed_mutex> lock(interface_mutex);
+
+  if (!sBluetoothVendorInterface) {
+    ALOGW("%s: sBluetoothVendorInterface is null.", __func__);
+    return JNI_FALSE;
+  }
+
+  const char* tmp_addr = env->GetStringUTFChars(address, NULL);
+  if (!tmp_addr) {
+    ALOGW("%s: address is null.", __func__);
+    return JNI_FALSE;
+  }
+  RawAddress bdaddr;
+  bool success = RawAddress::FromString(tmp_addr, bdaddr);
+
+  env->ReleaseStringUTFChars(address, tmp_addr);
+
+  if (!success) {
+    ALOGW("%s: address is invalid.", __func__);
+    return JNI_FALSE;
+  }
+
+  const char* feature_name_str = env->GetStringUTFChars(feature_name, NULL);
+  if (!feature_name_str) {
+    ALOGW("%s: feature name is null.", __func__);
+    return JNI_FALSE;
+  }
+
+  bool matched = sBluetoothVendorInterface->interop_match_addr(feature_name_str, &bdaddr);
+  env->ReleaseStringUTFChars(feature_name, feature_name_str);
+
+  return matched ? JNI_TRUE : JNI_FALSE;
+}
+
+static jboolean interopMatchNameNative(JNIEnv* env, jclass clazz,
+      jstring feature_name, jstring name) {
+  ALOGV("%s", __func__);
+
+  std::shared_lock<std::shared_timed_mutex> lock(interface_mutex);
+
+  if (!sBluetoothVendorInterface) {
+    ALOGW("%s: sBluetoothVendorInterface is null.", __func__);
+    return JNI_FALSE;
+  }
+
+  const char* feature_name_str = env->GetStringUTFChars(feature_name, NULL);
+  if (!feature_name_str) {
+    ALOGW("%s: feature name is null.", __func__);
+    return JNI_FALSE;
+  }
+
+  const char* name_str = env->GetStringUTFChars(name, NULL);
+  if (!name_str) {
+    ALOGW("%s: name is null.", __func__);
+    env->ReleaseStringUTFChars(feature_name, feature_name_str);
+    return JNI_FALSE;
+  }
+
+  bool matched = sBluetoothVendorInterface->interop_match_name(feature_name_str, name_str);
+  env->ReleaseStringUTFChars(feature_name, feature_name_str);
+  env->ReleaseStringUTFChars(name, name_str);
+
+  return matched ? JNI_TRUE : JNI_FALSE;
+}
+
+static jboolean interopMatchAddrOrNameNative(JNIEnv* env, jclass clazz,
+      jstring feature_name, jstring address) {
+  ALOGV("%s", __func__);
+
+  std::shared_lock<std::shared_timed_mutex> lock(interface_mutex);
+
+  if (!sBluetoothVendorInterface) {
+    ALOGW("%s: sBluetoothVendorInterface is null.", __func__);
+    return JNI_FALSE;
+  }
+
+  const char* tmp_addr = env->GetStringUTFChars(address, NULL);
+  if (!tmp_addr) {
+    ALOGW("%s: address is null.", __func__);
+    return JNI_FALSE;
+  }
+  RawAddress bdaddr;
+  bool success = RawAddress::FromString(tmp_addr, bdaddr);
+
+  env->ReleaseStringUTFChars(address, tmp_addr);
+
+  if (!success) {
+    ALOGW("%s: address is invalid.", __func__);
+    return JNI_FALSE;
+  }
+
+  const char* feature_name_str = env->GetStringUTFChars(feature_name, NULL);
+  if (!feature_name_str) {
+    ALOGW("%s: feature name is null.", __func__);
+    return JNI_FALSE;
+  }
+
+  bool matched = sBluetoothVendorInterface->interop_match_addr_or_name(feature_name_str, &bdaddr);
+  env->ReleaseStringUTFChars(feature_name, feature_name_str);
+
+  return matched ? JNI_TRUE : JNI_FALSE;
+}
+
+static void interopDatabaseAddRemoveAddrNative(JNIEnv* env, jclass clazz,
+      jboolean do_add, jstring feature_name, jstring address, jint length) {
+  ALOGV("%s", __func__);
+
+  std::shared_lock<std::shared_timed_mutex> lock(interface_mutex);
+
+  if (!sBluetoothVendorInterface) {
+    ALOGW("%s: sBluetoothVendorInterface is null.", __func__);
+    return;
+  }
+
+  if ((do_add == JNI_TRUE) && (length <= 0 || length > 6)) {
+    ALOGE("%s: address length %d is invalid, valid length is [1,6]", __func__, length);
+    return;
+  }
+
+  const char* tmp_addr = env->GetStringUTFChars(address, NULL);
+  if (!tmp_addr) {
+    ALOGW("%s: address is null.", __func__);
+    return;
+  }
+  RawAddress bdaddr;
+  bool success = RawAddress::FromString(tmp_addr, bdaddr);
+
+  env->ReleaseStringUTFChars(address, tmp_addr);
+
+  if (!success) {
+    ALOGW("%s: address is invalid.", __func__);
+    return;
+  }
+
+  const char* feature_name_str = env->GetStringUTFChars(feature_name, NULL);
+  if (!feature_name_str) {
+    ALOGW("%s: feature name is null.", __func__);
+    return;
+  }
+
+  sBluetoothVendorInterface->interop_database_add_remove_addr(
+      (do_add == JNI_TRUE), feature_name_str, &bdaddr, (int)length);
+
+  env->ReleaseStringUTFChars(feature_name, feature_name_str);
+}
+
+static void interopDatabaseAddRemoveNameNative(JNIEnv* env, jclass clazz,
+      jboolean do_add, jstring feature_name, jstring name) {
+  ALOGV("%s", __func__);
+
+  std::shared_lock<std::shared_timed_mutex> lock(interface_mutex);
+
+  if (!sBluetoothVendorInterface) {
+    ALOGW("%s: sBluetoothVendorInterface is null.", __func__);
+    return;
+  }
+
+  const char* feature_name_str = env->GetStringUTFChars(feature_name, NULL);
+  if (!feature_name_str) {
+    ALOGW("%s: feature name is null.", __func__);
+    return;
+  }
+
+  const char* name_str = env->GetStringUTFChars(name, NULL);
+  if (!name_str) {
+    ALOGW("%s: name is null.", __func__);
+    env->ReleaseStringUTFChars(feature_name, feature_name_str);
+    return;
+  }
+
+  sBluetoothVendorInterface->interop_database_add_remove_name(
+      (do_add == JNI_TRUE), feature_name_str, name_str);
+
+  env->ReleaseStringUTFChars(feature_name, feature_name_str);
+  env->ReleaseStringUTFChars(name, name_str);
+}
+
 static JNINativeMethod sMethods[] = {
     {"classInitNative", "()V", (void *) classInitNative},
     {"initNative", "()V", (void *) initNative},
@@ -625,6 +813,16 @@ static JNINativeMethod sMethods[] = {
     {"setClockSyncConfigNative", "(ZIIIII)Z", (void*) setClockSyncConfigNative},
     {"startClockSyncNative", "()Z", (void*) startClockSyncNative},
     {"informTimeoutToHidlNative", "()V", (void*) informTimeoutToHidlNative},
+    {"interopMatchAddrNative", "(Ljava/lang/String;Ljava/lang/String;)Z",
+        (void*)interopMatchAddrNative},
+    {"interopMatchNameNative", "(Ljava/lang/String;Ljava/lang/String;)Z",
+        (void*)interopMatchNameNative},
+    {"interopMatchAddrOrNameNative", "(Ljava/lang/String;Ljava/lang/String;)Z",
+        (void*)interopMatchAddrOrNameNative},
+    {"interopDatabaseAddRemoveAddrNative", "(ZLjava/lang/String;Ljava/lang/String;I)V",
+        (void*)interopDatabaseAddRemoveAddrNative},
+    {"interopDatabaseAddRemoveNameNative", "(ZLjava/lang/String;Ljava/lang/String;)V",
+        (void*)interopDatabaseAddRemoveNameNative},
 };
 
 int load_bt_configstore_lib() {

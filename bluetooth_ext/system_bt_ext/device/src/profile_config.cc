@@ -58,7 +58,7 @@ static config_t *config;
 #define SECTION_MAX_LENGTH  (249)
 #define KEY_MAX_LENGTH      (249)
 #define VALUE_MAX_LENGTH    (6)
-
+#define BT_DEFAULT_POWER    (0x80)
 struct config_t {
   list_t *sections;
 };
@@ -288,9 +288,11 @@ static void profile_database_add_(profile_db_entry_t *db_entry)
   }
 }
 
-max_pow_feature_t  max_radiated_power_fetch(const profile_t profile, profile_info_t feature_name)
+max_pow_feature_t max_radiated_power_fetch(const profile_t profile, profile_info_t feature_name)
 {
-  static max_pow_feature_t Tech_max_power = {0x80, 0x80, 0x80, false, false, false};
+  static max_pow_feature_t Tech_max_power = {BT_DEFAULT_POWER, BT_DEFAULT_POWER,
+                                             BT_DEFAULT_POWER, false, false,
+                                             false};
   assert(profile);
   LOG_WARN(LOG_TAG, "max_radiated_power_fetch:profile %d", profile);
 
@@ -303,7 +305,9 @@ max_pow_feature_t  max_radiated_power_fetch(const profile_t profile, profile_inf
     switch (feature_name) {
       case BR_MAX_POW_SUPPORT:
       {
-        if (db_entry->profile_feature_type.max_pow_feature_entry.BR_max_pow_feature == true) {
+        if ((db_entry->profile_feature_type.max_pow_feature_entry.
+            BR_max_pow_feature == true) && (db_entry->profile_feature_type.
+            max_pow_feature_entry.BR_max_pow_support != BT_DEFAULT_POWER)) {
           Tech_max_power.BR_max_pow_feature = true;
           Tech_max_power.BR_max_pow_support =
              db_entry->profile_feature_type.max_pow_feature_entry.BR_max_pow_support;
@@ -312,7 +316,9 @@ max_pow_feature_t  max_radiated_power_fetch(const profile_t profile, profile_inf
       break;
       case EDR_MAX_POW_SUPPORT:
       {
-        if (db_entry->profile_feature_type.max_pow_feature_entry.EDR_max_pow_feature == true) {
+        if ((db_entry->profile_feature_type.max_pow_feature_entry.
+            EDR_max_pow_feature == true) && (db_entry->profile_feature_type.
+            max_pow_feature_entry.EDR_max_pow_support != BT_DEFAULT_POWER)) {
           Tech_max_power.EDR_max_pow_feature = true;
           Tech_max_power.EDR_max_pow_support =
              db_entry->profile_feature_type.max_pow_feature_entry.EDR_max_pow_support;
@@ -321,7 +327,9 @@ max_pow_feature_t  max_radiated_power_fetch(const profile_t profile, profile_inf
       break;
       case BLE_MAX_POW_SUPPORT:
       {
-        if (db_entry->profile_feature_type.max_pow_feature_entry.BLE_max_pow_feature == true) {
+        if ((db_entry->profile_feature_type.max_pow_feature_entry.
+            BLE_max_pow_feature == true) && (db_entry->profile_feature_type.
+            max_pow_feature_entry.BLE_max_pow_support != BT_DEFAULT_POWER)) {
           Tech_max_power.BLE_max_pow_feature = true;
           Tech_max_power.BLE_max_pow_support =
              db_entry->profile_feature_type.max_pow_feature_entry.BLE_max_pow_support;

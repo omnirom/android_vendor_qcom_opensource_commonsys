@@ -60,6 +60,9 @@
 
 #if (TWS_AG_ENABLED == TRUE)
 
+RawAddress g_latest_left_addr;
+RawAddress g_latest_right_addr;
+
 void send_twsp_esco_setup (const RawAddress& left_eb_addr, const RawAddress& rght_eb_addr,
     uint8_t selected_mic);
 void print_bdaddr(const RawAddress& addr);
@@ -268,6 +271,7 @@ void bta_ag_twsp_sco_event(tBTA_AG_SCB* p_scb, uint8_t event) {
                     p_sco->state = BTA_AG_SCO_OPENING_ST;
                 } else {
                     APPL_TRACE_WARNING("%s: create sco connection failed", __func__);
+                    p_sco->p_curr_scb = NULL;
                     p_sco->state = BTA_AG_SCO_LISTEN_ST;
                     bta_ag_cback_sco(p_scb, BTA_AG_AUDIO_CLOSE_EVT);
                 }
@@ -563,6 +567,23 @@ bool is_sco_connected_to_twsp() {
    return ret;
 }
 
+bool is_sco_opening_to_twsp() {
+   bool ret = false;
+   if (bta_ag_cb.sco.state == BTA_AG_SCO_OPENING_ST
+         && bta_ag_cb.main_sm_scb != NULL
+         && is_twsp_device(bta_ag_cb.main_sm_scb->peer_addr)) {
+            //if main SM sco is opening
+            //for twsp device
+            ret = true;
+   } else if (bta_ag_cb.twsp_sec_sco.state == BTA_AG_SCO_OPENING_ST
+         && bta_ag_cb.sec_sm_scb != NULL
+         && is_twsp_device(bta_ag_cb.sec_sm_scb->peer_addr )) {
+            ret = true;
+   }
+   APPL_TRACE_DEBUG("%s: returns : %d", __func__, ret);
+   return ret;
+}
+
 bool is_this_twsp_case(const RawAddress& addr) {
     bool ret = false;
     if (is_twsp_device(addr)
@@ -643,17 +664,33 @@ void twsp_update_microphone_selection(tBTA_AG_SCB *curr_scb,
         return;
     }
 
-   if (twsp_get_left_eb_addr(left_eb_addr) == true) {
-       if (twsp_get_right_eb_addr(right_eb_addr) == false) {
-          get_peer_twsp_addr(left_eb_addr, right_eb_addr);
-       }
-    } else {
-       if (twsp_get_right_eb_addr(right_eb_addr) == true) {
-          get_peer_twsp_addr(right_eb_addr, left_eb_addr);
+    if (!(is_sco_connected_to_twsp() || is_sco_opening_to_twsp())) {
+       if (twsp_get_left_eb_addr(left_eb_addr) == true) {
+           if (twsp_get_right_eb_addr(right_eb_addr) == false) {
+              get_peer_twsp_addr(left_eb_addr, right_eb_addr);
+           }
        } else {
-          APPL_TRACE_DEBUG("there are no valid scbs");
-          return;
+             if (twsp_get_right_eb_addr(right_eb_addr) == true) {
+                 get_peer_twsp_addr(right_eb_addr, left_eb_addr);
+             } else {
+                 APPL_TRACE_DEBUG("there are no valid scbs");
+                 return;
+             }
        }
+       g_latest_left_addr = left_eb_addr;
+       g_latest_right_addr = right_eb_addr;
+       APPL_TRACE_DEBUG("%s: g_latest_left_addr: %s, g_latest_right_addr: %s", __func__,
+            g_latest_left_addr.ToString().c_str(), g_latest_right_addr.ToString().c_str());
+    } else {
+        if (!g_latest_left_addr.IsEmpty() && !g_latest_right_addr.IsEmpty()){
+           left_eb_addr = g_latest_left_addr;
+           right_eb_addr = g_latest_right_addr;
+           APPL_TRACE_DEBUG("%s: left_eb_addr: %s, right_eb_addr: %s", __func__,
+                left_eb_addr.ToString().c_str(), right_eb_addr.ToString().c_str());
+        } else {
+           APPL_TRACE_DEBUG("the g_latest_left_addr or g_latest_right_addr is empty");
+           return;
+        }
     }
 
     bta_ag_send_result(selected_scb, BTA_AG_MIC_RES, nullptr, MIC_ENABLE);

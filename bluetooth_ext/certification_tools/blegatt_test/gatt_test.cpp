@@ -2221,7 +2221,7 @@ static tL2CAP_APPL_INFO l2test_l2c_appl = {
 void bdt_init(void)
 {
     bdt_log("INIT BT ");
-    status = sBtInterface->init(&bt_callbacks, false, false, 0);
+    status = sBtInterface->init(&bt_callbacks, false, false, 0, false);
     if (status == BT_STATUS_SUCCESS) {
         // Get Vendor Interface
         btvendorInterface = (btvendor_interface_t *)sBtInterface->get_profile_interface(BT_PROFILE_VENDOR_ID);
@@ -2436,7 +2436,7 @@ void do_le_client_register(char *p)
     }
     if(Btif_gatt_layer)
     {
-        Ret = sGattIfaceScan->client->register_client(bt_uuid);
+        Ret = sGattIfaceScan->client->register_client(bt_uuid, false);
         printf("%s:: ret value %d\n", __FUNCTION__,Ret);
     }
     else
@@ -2967,7 +2967,7 @@ void do_le_server_register(char *p)
 
     if(Btif_gatt_layer)
     {
-        Ret = sGattIfaceScan->server->register_server(bt_uuid);
+        Ret = sGattIfaceScan->server->register_server(bt_uuid, false);
         printf("%s:: Ret=%d \n", __FUNCTION__, Ret);
     }
     else

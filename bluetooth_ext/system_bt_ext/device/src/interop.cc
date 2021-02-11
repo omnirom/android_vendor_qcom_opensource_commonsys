@@ -29,6 +29,9 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <hardware/bluetooth.h>
+#include <map>
+#include <string>
+#include <utility>
 
 #include "bt_types.h"
 #include "osi/include/config.h"
@@ -59,6 +62,10 @@ pthread_mutex_t interop_list_lock;
 static pthread_mutex_t file_lock;
 static config_t *config_static;
 static config_t *config_dynamic;
+
+static const char* UNKNOWN_INTEROP_FEATURE = "UNKNOWN";
+// map from feature name to feature id
+static std::map<std::string, int> feature_name_id_map;
 
 #define CASE_RETURN_STR(const) case const: return #const;
 // Macro used to find the total number of feature_types
@@ -242,6 +249,7 @@ static const char* interop_feature_string_(const interop_feature_t feature)
     CASE_RETURN_STR(INTEROP_DISABLE_LE_CONN_PREFERRED_PARAMS)
     CASE_RETURN_STR(INTEROP_ADV_AVRCP_VER_1_3)
     CASE_RETURN_STR(INTEROP_DISABLE_AAC_CODEC)
+    CASE_RETURN_STR(INTEROP_DISABLE_AAC_VBR_CODEC)
     CASE_RETURN_STR(INTEROP_DYNAMIC_ROLE_SWITCH)
     CASE_RETURN_STR(INTEROP_DISABLE_ROLE_SWITCH)
     CASE_RETURN_STR(INTEROP_DISABLE_ROLE_SWITCH_POLICY)
@@ -266,9 +274,33 @@ static const char* interop_feature_string_(const interop_feature_t feature)
     CASE_RETURN_STR(INTEROP_DISABLE_LPA_ENHANCED_POWER_CONTROL)
     CASE_RETURN_STR(INTEROP_DISABLE_REFRESH_ACCPET_SIG_TIMER)
     CASE_RETURN_STR(INTEROP_BROWSE_PLAYER_WHITE_LIST)
+    CASE_RETURN_STR(INTEROP_SKIP_INCOMING_STATE)
+    CASE_RETURN_STR(INTEROP_NOT_UPDATE_AVRCP_PAUSED_TO_REMOTE)
+    CASE_RETURN_STR(INTEROP_PHONE_POLICY_INCREASED_DELAY_CONNECT_OTHER_PROFILES)
+    CASE_RETURN_STR(INTEROP_PHONE_POLICY_REDUCED_DELAY_CONNECT_OTHER_PROFILES)
+    CASE_RETURN_STR(INTEROP_HFP_FAKE_INCOMING_CALL_INDICATOR)
+    CASE_RETURN_STR(INTEROP_HFP_SEND_CALL_INDICATORS_BACK_TO_BACK)
     CASE_RETURN_STR(END_OF_INTEROP_LIST)
   }
-  return "UNKNOWN";
+  return UNKNOWN_INTEROP_FEATURE;
+}
+
+static void interop_init_feature_name_id_map()
+{
+  LOG_DEBUG(LOG_TAG, "%s", __func__);
+
+  feature_name_id_map.clear();
+
+  int feature;
+
+  for (feature = BEGINING_OF_INTEROP_LIST;
+      feature < END_OF_INTEROP_LIST; feature++ ) {
+    const char* feature_name = interop_feature_string_((interop_feature_t)feature);
+    if (!strcmp(UNKNOWN_INTEROP_FEATURE, feature_name))
+      continue;
+
+    feature_name_id_map.insert(std::pair<std::string, int>(feature_name, feature));
+  }
 }
 
 void interop_database_clear()
@@ -285,6 +317,8 @@ void interop_database_clear()
 
 static future_t *interop_init(void)
 {
+  interop_init_feature_name_id_map();
+
   interop_lazy_init_();
   interop_is_initialized = true;
   return future_new_immediate(FUTURE_SUCCESS);
@@ -425,6 +459,21 @@ static int get_feature(char *section)
       return feature;
   }
   return -1;
+}
+
+int interop_feature_name_to_feature_id(const char* feature_name)
+{
+  if (feature_name == NULL) {
+    return -1;
+  }
+
+  auto it = feature_name_id_map.find(std::string(feature_name));
+  if (it == feature_name_id_map.end()) {
+    LOG_WARN(LOG_TAG, "%s: feature does not exist: %s", __func__, feature_name);
+    return -1;
+  }
+
+  return it->second;
 }
 
 static void interop_database_add_( interop_db_entry_t *db_entry,

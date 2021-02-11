@@ -422,8 +422,6 @@ static void btif_tws_plus_upstreams_evt(uint16_t event, char* p_param) {
             BTIF_TRACE_DEBUG("%s:  BTA_TWS_PLUS_LK_DERIVED_EVT  bond state for new  ", __func__);
             bond_state_changed(BT_STATUS_SUCCESS,
                         p_data->lk_derived.peer_eb_addr, BT_BOND_STATE_BONDING);
-            bond_state_changed(BT_STATUS_SUCCESS,
-                        p_data->lk_derived.peer_eb_addr, BT_BOND_STATE_BONDED);
 
             if(reason == LK_DERIVATION_REASON_PAIR) {
                 btif_tws_plus_auto_connect(&p_data->lk_derived.peer_eb_addr, false);
@@ -435,6 +433,10 @@ static void btif_tws_plus_upstreams_evt(uint16_t event, char* p_param) {
                 btif_tws_plus_update_rmt_dev_props( &p_data->lk_derived.bd_addr,
                                                    &p_data->lk_derived.peer_eb_addr);
             }
+
+            BTIF_TRACE_DEBUG("%s:  peer device props updated, change state to BONDED ", __func__);
+            bond_state_changed(BT_STATUS_SUCCESS,
+                        p_data->lk_derived.peer_eb_addr, BT_BOND_STATE_BONDED);
         }
       break;
     }

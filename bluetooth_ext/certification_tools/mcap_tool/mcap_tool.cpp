@@ -804,7 +804,7 @@ static bt_os_callouts_t callouts = {
 void bdt_init(void)
 {
     bdt_log("INIT BT ");
-    status = (bt_status_t)sBtInterface->init(&bt_callbacks, false, false);
+    status = (bt_status_t)sBtInterface->init(&bt_callbacks, false, false, 0, false);
      if (status == BT_STATUS_SUCCESS) {
         // Get Vendor Interface
         btvendorInterface = (btvendor_interface_t *)sBtInterface->get_profile_interface(BT_PROFILE_VENDOR_ID);

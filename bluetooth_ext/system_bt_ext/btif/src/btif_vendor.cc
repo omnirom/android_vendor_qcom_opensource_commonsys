@@ -83,6 +83,8 @@
 #include "btif_tws_plus.h"
 #include "btif_api.h"
 #include "device/include/controller.h"
+#include "device/include/interop.h"
+#include "interop_config.h"
 
 #if TEST_APP_INTERFACE == TRUE
 #include <bt_testapp.h>
@@ -624,6 +626,94 @@ static void start_clock_sync(void)
     BTM_VendorSpecificCommand(opcode, 1, cmdbuf, clock_sync_cback);
 }
 
+static bool vendor_interop_match_addr(const char* feature_name,
+    const RawAddress* addr)
+{
+  if (feature_name == NULL || addr == NULL) {
+    return false;
+  }
+
+  int feature = interop_feature_name_to_feature_id(feature_name);
+  if (feature == -1) {
+    BTIF_TRACE_ERROR("%s: feature doesn't exist: %s", __func__, feature_name);
+    return false;
+  }
+
+  return interop_match_addr((interop_feature_t)feature, addr);
+}
+
+static bool vendor_interop_match_name(const char* feature_name,
+    const char* name)
+{
+  if (feature_name == NULL || name == NULL) {
+    return false;
+  }
+
+  int feature = interop_feature_name_to_feature_id(feature_name);
+  if (feature == -1) {
+    BTIF_TRACE_ERROR("%s: feature doesn't exist: %s", __func__, feature_name);
+    return false;
+  }
+
+  return interop_match_name((interop_feature_t)feature, name);
+}
+
+static bool vendor_interop_match_addr_or_name(const char* feature_name,
+    const RawAddress* addr)
+{
+  if (feature_name == NULL || addr == NULL) {
+    return false;
+  }
+
+  int feature = interop_feature_name_to_feature_id(feature_name);
+  if (feature == -1) {
+    BTIF_TRACE_ERROR("%s: feature doesn't exist: %s", __func__, feature_name);
+    return false;
+  }
+
+  return interop_match_addr_or_name((interop_feature_t)feature, addr);
+}
+
+static void vendor_interop_database_add_remove_addr(bool do_add,
+    const char* feature_name, const RawAddress* addr, int length)
+{
+  if (feature_name == NULL || addr == NULL) {
+    return;
+  }
+
+  int feature = interop_feature_name_to_feature_id(feature_name);
+  if (feature == -1) {
+    BTIF_TRACE_ERROR("%s: feature doesn't exist: %s", __func__, feature_name);
+    return;
+  }
+
+  if (do_add) {
+    interop_database_add_addr((interop_feature_t)feature, addr, (size_t)length);
+  } else {
+    interop_database_remove_addr((interop_feature_t)feature, addr);
+  }
+}
+
+static void vendor_interop_database_add_remove_name(bool do_add,
+    const char* feature_name, const char* name)
+{
+  if (feature_name == NULL || name == NULL) {
+    return;
+  }
+
+  int feature = interop_feature_name_to_feature_id(feature_name);
+  if (feature == -1) {
+    BTIF_TRACE_ERROR("%s: feature doesn't exist: %s", __func__, feature_name);
+    return;
+  }
+
+  if (do_add) {
+    interop_database_add_name((interop_feature_t)feature, name);
+  } else {
+    interop_database_remove_name((interop_feature_t)feature, name);
+  }
+}
+
 /*******************************************************************************
 **
 ** Function         get_testapp_interface
@@ -678,6 +768,11 @@ static const btvendor_interface_t btvendorInterface = {
     hciclose,
     set_clock_sync_config,
     start_clock_sync,
+    vendor_interop_match_addr,
+    vendor_interop_match_name,
+    vendor_interop_match_addr_or_name,
+    vendor_interop_database_add_remove_addr,
+    vendor_interop_database_add_remove_name,
 };
 
 /*******************************************************************************
