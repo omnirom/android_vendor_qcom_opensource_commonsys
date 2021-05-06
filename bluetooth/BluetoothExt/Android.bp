@@ -1,0 +1,15 @@
+android_app {
+    name: "BluetoothExt",
+    system_ext_specific: true,
+
+    srcs: ["src/**/*.java"],
+
+    platform_apis: true,
+    certificate: "platform",
+    libs: ["javax.obex"],
+    static_libs: ["vendor.qti.hardware.bluetooth_dun-V1.0-java"],
+
+    optimize: {
+        enabled: false,
+    },
+}

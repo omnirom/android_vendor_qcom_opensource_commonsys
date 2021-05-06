@@ -2061,11 +2061,6 @@ public class BluetoothDunService extends Service {
     public void notifyProfileConnectionStateChanged(BluetoothDevice device,
             int profileId, int newState, int prevState) {
         if (mAdapterService != null) {
-            try {
-                mAdapterService.sendConnectionStateChange(device, profileId, newState, prevState);
-            }catch (RemoteException re) {
-                Log.e(TAG, "",re);
-            }
         }
     }
 

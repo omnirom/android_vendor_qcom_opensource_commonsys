@@ -1,0 +1,25 @@
+cc_binary {
+    name: "bt_logger",
+    system_ext_specific: true,
+    init_rc: ["init.qti.bt.logger.rc"],
+
+    srcs: [
+        "src/btsnoop_dump.c",
+        "src/bt_logger.c",
+        "src/bt_log_buffer.c",
+    ],
+
+    product_variables: {
+        debuggable: {
+            cflags: [
+                "-DLOGGER_USERDEBUG",
+            ],
+        },
+    },
+
+    local_include_dirs: ["incl"],
+
+    shared_libs: ["libcutils",
+                  "liblog",
+    ],
+}

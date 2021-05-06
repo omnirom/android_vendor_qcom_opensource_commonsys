@@ -1,0 +1,19 @@
+android_app {
+    name: "pxp-monitor",
+    system_ext_specific: true,
+
+    srcs: [
+        "src/**/*.java",
+        "src/org/codeaurora/bluetooth/pxpservice/IPxpService.aidl",
+    ],
+
+    certificate: "platform",
+
+    owner: "qti",
+
+    optimize: {
+        enabled: false,
+    },
+
+    platform_apis: true,
+}
