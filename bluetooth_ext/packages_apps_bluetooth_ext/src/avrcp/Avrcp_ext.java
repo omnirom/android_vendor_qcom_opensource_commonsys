@@ -181,6 +181,7 @@ public final class Avrcp_ext {
     public static final String ABS_VOL_MAP = "bluetooth_ABS_VOL_map";
     private boolean isShoActive = false;
     private boolean twsShoEnabled = false;
+    private int mPreActiveDeviceIndex; //Previous active device index
 
     private static final String nonMediaAppsBlacklistedNames[] = {
        "telecom",
@@ -462,6 +463,7 @@ public final class Avrcp_ext {
         mRewind = false;
         mCurrentBrowsingDevice = null;
         mBrowsingActiveDevice = null;
+        mPreActiveDeviceIndex = INVALID_DEVICE_INDEX;
 
         initNative(maxAvrcpConnections);
         String twsSho = SystemProperties.get("persist.vendor.btstack.enable.twsplussho");
@@ -658,6 +660,7 @@ public final class Avrcp_ext {
         mBrowsePlayerListConfWLDB.clear();
         mCurrentBrowsingDevice = null;
         mBrowsingActiveDevice = null;
+        mPreActiveDeviceIndex = INVALID_DEVICE_INDEX;
         if (mNotificationManager != null )
             mNotificationManager.deleteNotificationChannel(AVRCP_NOTIFICATION_ID);
         changePathDepth = 0;
@@ -1659,6 +1662,13 @@ public final class Avrcp_ext {
                         }
                     }
                 }
+                for (int i = 0; i < maxAvrcpConnections; i++) {
+                        if (deviceFeatures[i].isActiveDevice == true) {
+                           mPreActiveDeviceIndex = i;
+                           break;
+                        }
+                }
+
                 deviceIndex = getIndexForDevice(bt_device);
                 if (deviceIndex == INVALID_DEVICE_INDEX) {
                     Log.e(TAG,"Invalid device index for setActiveDevice");
@@ -1730,6 +1740,12 @@ public final class Avrcp_ext {
 
                 //to keep volume copy for setting volume
                 deviceFeatures[deviceIndex].mLocalVolume = getVolume(bt_device);
+                if((mPreActiveDeviceIndex != INVALID_DEVICE_INDEX)
+                        && (deviceFeatures[mPreActiveDeviceIndex].mLocalVolume == 0)
+                        && (deviceFeatures[deviceIndex].mLocalVolume > 0)) {
+                    Log.d(TAG,"Previous device volume is 0, notify audio current volume is not 0.");
+                    notifyVolumeChanged(deviceFeatures[deviceIndex].mLocalVolume, false);
+                }
                 if((maxAvrcpConnections > 1) && (deviceFeatures[deviceIndex].mCurrentDevice != null)
                         && (deviceFeatures[deviceIndex].mReportedPlayerID != mCurrAddrPlayerID)) {
                     Log.d(TAG,"Update cache browsing event to last active device, deviceFeatures[" +
